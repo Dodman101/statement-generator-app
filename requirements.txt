@@ -1,0 +1,8 @@
+Flask
+Werkzeug
+docxtpl
+docx2pdf
+openpyxl
+pythoncom
+pdfplumber
+PyPDF2

@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Statement Generator</title>
+</head>
+<body>
+    <h1>Statement Generator</h1>
+    <form action="/process_statement" method="POST" enctype="multipart/form-data">
+        <label for="template_file">Upload Template File:</label>
+        <input type="file" name="template_file" required><br><br>
+
+        <label for="data_file">Upload Data File:</label>
+        <input type="file" name="data_file" required><br><br>
+
+        <label for="password_protection">Enable Password Protection:</label>
+        <input type="checkbox" name="password_protection"><br><br>
+
+        <button type="submit">Generate Statements</button>
+    </form>
+</body>
+</html>
