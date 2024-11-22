@@ -1,7 +1,9 @@
 import os
-from flask import Flask
+from flask import Flask, render_template
 from dotenv import load_dotenv
 from app.utils import create_folders
+from app.routes.generate_statements import generate_stats_bp
+
 
 # Load environment variables from .env file
 load_dotenv()
@@ -17,8 +19,12 @@ def create_app():
     # Create necessary folders
     create_folders(app)
 
-     # Register routes
-    from app.routes import api_routes
-    app.register_blueprint(api_routes, url_prefix='/api')
+    # Register the blueprint with the '/api' URL prefix
+    app.register_blueprint(generate_stats_bp, url_prefix='/api')
+
+    # Add a root route directly in the app
+    @app.route('/')
+    def home():
+        return render_template("landing_page.html")
 
     return app
