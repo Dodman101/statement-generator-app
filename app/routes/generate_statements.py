@@ -17,6 +17,7 @@ generate_stats_bp = Blueprint('generate_stats', __name__)
 @generate_stats_bp.route('/statement_generator')
 def statement_generator():
     try:
+        print("Statement generator route accessed")
         return render_template('generate_statements.html')
     except TemplateNotFound:
         return render_template('404.html'), 404
@@ -137,3 +138,4 @@ def process_statement():
         return jsonify({"message": str(e)}), 500
 
     return jsonify({"message": "Files processed successfully"}), 200
+
