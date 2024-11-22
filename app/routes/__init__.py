@@ -5,6 +5,9 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
+# Export the blueprint for the application
+api_routes = generate_stats_bp
+
 def create_app():
     app = Flask(__name__)
 
