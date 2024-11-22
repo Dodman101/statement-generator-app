@@ -1,7 +1,3 @@
-from flask import Blueprint, render_template, request, jsonify, current_app, session, flash
-from werkzeug.utils import secure_filename
-from docxtpl import DocxTemplate
-from docx2pdf import convert
 import openpyxl
 import os
 import pythoncom
@@ -9,6 +5,12 @@ import shutil
 import pdfplumber
 import re
 import PyPDF2
+from flask import Blueprint, render_template, request, jsonify, current_app, session, flash
+from werkzeug.utils import secure_filename
+from docxtpl import DocxTemplate
+from docx2pdf import convert
+from jinja2 import TemplateNotFound
+
 
 generate_stats_bp = Blueprint('generate_stats', __name__)
 
