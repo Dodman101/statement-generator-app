@@ -1,6 +1,7 @@
 import os
 from flask import Flask
 from dotenv import load_dotenv
+from app.utils import create_folders
 
 # Load environment variables from .env file
 load_dotenv()
@@ -16,22 +17,8 @@ def create_app():
     # Create necessary folders
     create_folders(app)
 
-    # Register routes or blueprints if needed
+     # Register routes
     from app.routes import api_routes
-    app.register_blueprint(api_routes)
+    app.register_blueprint(api_routes, url_prefix='/api')
 
     return app
-
-def create_folders(app):
-    """
-    Ensure required folders exist, and create them if not.
-    """
-    folders = [
-        app.config.get('UPLOAD_FOLDER', 'app/uploads'),
-        app.config.get('OUTPUT_FOLDER', 'app/uploads/outputs')
-    ]
-    
-    for folder in folders:
-        if not os.path.exists(folder):
-            os.makedirs(folder)
-            print(f"Created folder: {folder}")
