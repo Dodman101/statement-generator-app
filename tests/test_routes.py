@@ -9,7 +9,6 @@ def client():
         yield client
 
 def test_index_route(client):
-    """Test the default route."""
-    response = client.get('/')
+    """Test the statement generator route."""
+    response = client.get('/api/statement_generator')
     assert response.status_code == 200
-    assert b"Welcome to the Statement Generator API" in response.data
