@@ -170,7 +170,7 @@ class StatementGenerator:
 
 
 
-@app.route('/process_statement', methods=['POST'])
+@generate_stats_bp.route('/process_statement', methods=['POST'])
 def process_statement():
     # Check if password protection is enabled
     password_protection = request.form.get('password_protection') == 'on'
