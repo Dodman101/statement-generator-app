@@ -4,7 +4,6 @@ from dotenv import load_dotenv
 from app.utils import create_folders
 from app.routes.generate_statements import generate_stats_bp
 
-
 # Load environment variables from .env file
 load_dotenv()
 
