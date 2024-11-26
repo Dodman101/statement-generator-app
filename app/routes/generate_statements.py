@@ -116,30 +116,42 @@ class StatementGenerator:
                     raise RuntimeError(f"Error renaming PDF: {e}")
 
     def apply_password_protection(self):
+        """
+        Apply password protection to PDFs using the client's ID from the Excel file.
+        """
         id_column_index = None
+
+        # Find the column containing client IDs
         for index, header in enumerate(self.header_row):
             if header and header.strip().lower() in ['id', 'client id', 'member id']:
                 id_column_index = index
                 break
 
         if id_column_index is None:
-            raise ValueError("No ID column found in the Excel headers for password protection.")
-        
+            raise ValueError("No 'ID' column found in the Excel headers for password protection.")
+
+        # Apply password protection to PDFs
         for row, pdf_filename in zip(self.sheet.iter_rows(min_row=2, values_only=True), os.listdir(self.output_folder)):
             if pdf_filename.endswith(".pdf"):
                 full_path = os.path.join(self.output_folder, pdf_filename)
-                try:
-                    client_id = row[id_column_index]
-                    if client_id:
-                        password = str(client_id).strip()
-                        reader = PdfReader(full_path)
-                        writer = PdfWriter()
-                        writer.append_pages_from_reader(reader)
-                        writer.encrypt(password)
+                client_id = row[id_column_index]
+                if not client_id:
+                    print(f"No ID found for row: {row}")
+                    continue
 
-                        output_pdf_path = full_path
-                        with open(output_pdf_path, "wb") as pdf_file:
-                            writer.write(pdf_file)
+                # Protect the PDF with the client ID as the password
+                try:
+                    pdf_reader = PdfReader(full_path)
+                    pdf_writer = PdfWriter()
+                    pdf_writer.clone_reader_document_root(pdf_reader)
+                    pdf_writer.encrypt(str(client_id))
+
+                    protected_pdf_path = os.path.join(self.output_folder, f"protected_{pdf_filename}")
+                    with open(protected_pdf_path, 'wb') as protected_file:
+                        pdf_writer.write(protected_file)
+
+                    os.remove(full_path)  # Remove the unprotected file
+                    os.rename(protected_pdf_path, full_path)  # Rename the protected file back
                 except Exception as e:
                     raise RuntimeError(f"Error applying password protection: {e}")
 
@@ -150,41 +162,49 @@ class StatementGenerator:
         self.validate_template()
         self.generate_documents()
         self.convert_to_pdf()
-        self.rename_pdfs()
-        if password_protect:
+
+        if password_protection:
             self.apply_password_protection()
 
+        self.rename_pdfs()
 
 
-@generate_stats_bp.route('/process_statement', methods=['POST'])
+
+@app.route('/process_statement', methods=['POST'])
 def process_statement():
-    app = current_app
-    upload_folder = app.config['UPLOAD_FOLDER']
-    output_folder = app.config['OUTPUT_FOLDER']
+    # Check if password protection is enabled
+    password_protection = request.form.get('password_protection') == 'on'
 
-    if 'template_file' not in request.files or 'data_file' not in request.files:
+    # Logging for debugging
+    print(f"Password Protection Enabled: {password_protection}")
+
+    # Get files
+    template_file = request.files.get('template_file')
+    data_file = request.files.get('data_file')
+
+    if not template_file or not data_file:
         return jsonify({"message": "Both files are required"}), 400
 
-    template_file = request.files['template_file']
-    data_file = request.files['data_file']
-    password_protect = request.form.get('password_protect', 'false').lower() == 'true'
-
-    if not (allowed_file(template_file.filename) and allowed_file(data_file.filename)):
-        return jsonify({"message": "Invalid file type"}), 400
-
+    # Save files temporarily
+    upload_folder = current_app.config['UPLOAD_FOLDER']
     saved_template_path = os.path.join(upload_folder, secure_filename(template_file.filename))
     saved_data_path = os.path.join(upload_folder, secure_filename(data_file.filename))
-
     template_file.save(saved_template_path)
     data_file.save(saved_data_path)
 
+    # Process the files
+    output_folder = current_app.config['OUTPUT_FOLDER']
     try:
         generator = StatementGenerator(saved_template_path, saved_data_path, output_folder)
-        generator.run(password_protect=password_protect)
+
+        # Pass password protection flag to the generator
+        generator.run(password_protection=password_protection)
+
+        # Clean up temporary files
         os.remove(saved_template_path)
         os.remove(saved_data_path)
         return jsonify({"message": "Statements processed successfully!"}), 200
     except Exception as e:
         logger.error(f"Error processing statements: {e}")
-        return jsonify({"message": "An error occurred during processing", "details": str(e)}), 500
+        return jsonify({"message": f"Error: {str(e)}"}), 500
 
