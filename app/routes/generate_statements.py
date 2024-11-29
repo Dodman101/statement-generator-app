@@ -118,14 +118,6 @@ class StatementGenerator:
 
         # Fallback if no path is found
         return None
-    
-    libreoffice_path = self._get_libreoffice_path()
-    if libreoffice_path:
-        print(f"LibreOffice found at: {libreoffice_path}")
-    else:
-        print("LibreOffice not found. Please check the installation.")
-
-
 
     def format_number(self, value):
         """Format numbers into readable strings."""
