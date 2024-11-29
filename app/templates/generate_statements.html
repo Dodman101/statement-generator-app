@@ -103,7 +103,7 @@
                     const tempId = data.temp_id;
     
                     // Start polling for progress
-                    const statusUrl = `/api/status/${tempId}`;
+                    const statusUrl = `/api/progress/${tempId}`;
                     const downloadUrl = `/api/download_statement/${tempId}`;
                     const pollInterval = 2000; // Poll every 2 seconds
                     let retries = 0;
