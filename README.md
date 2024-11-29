@@ -1,137 +1,153 @@
-Statement Generator
-===================
+# Statement Generator API
 
-This project provides a tool for generating, converting, and processing personalized statements for clients, based on data in Excel files. The tool takes in a Word template, fills it with data from the Excel file, converts the documents into PDF format, applies optional password protection, and renames them based on the client's details. All these operations are managed and monitored through a Flask web application.
+## Overview
+The Statement Generator API is a Flask-based service that automates the generation of personalized statements in PDF format from Word templates and Excel data sources. It supports features like password protection, progress tracking, and batch processing.
 
-Features
---------
+## Features
+- Generate multiple PDFs from a Word template and Excel data
+- Password protection using client IDs
+- Progress tracking for long-running tasks
+- Automatic file cleanup
+- Secure file handling
+- ZIP file download of generated documents
 
--   **Document Generation**: Creates Word documents from a template and client data.
--   **PDF Conversion**: Converts Word documents to PDF.
--   **Password Protection**: Optionally apply password protection to the PDFs.
--   **Progress Tracking**: Track the status of document generation in real-time.
--   **Downloadable Zip**: Download all generated PDFs in a zip archive.
+## Prerequisites
+- Python 3.8+
+- Microsoft Word (for docx template processing)
+- Required Python packages (see requirements.txt)
 
-Requirements
-------------
+## Installation
 
--   Python 3.7+
--   Flask
--   `openpyxl` for Excel file processing
--   `python-docx` for handling Word documents
--   `docxtpl` for template-based document generation
--   `docx2pdf` for Word-to-PDF conversion
--   `PyPDF2` for handling PDF encryption
--   `pdfplumber` for PDF processing
--   `werkzeug` for secure file handling
--   `uuid` for generating unique temporary IDs
--   `shutil`, `os`, and `re` for file management
+1. Clone the repository:
+```bash
+git clone https://github.com/yourusername/statement-generator-api.git
+cd statement-generator-api
+```
 
-To install the required packages, run:
+2. Create and activate a virtual environment:
+```bash
+python -m venv venv
+source venv/bin/activate  # Linux/Mac
+venv\Scripts\activate     # Windows
+```
 
-bash
+3. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
 
-Copy code
+4. Create a .env file:
+```env
+STATEMENT_GENERATOR_KEY=your_secret_key_here
+```
 
-`pip install -r requirements.txt`
+## Project Structure
+```
+statement-generator-api/
+├── app/
+│   ├── __init__.py
+│   ├── routes/
+│   │   └── generate_statements.py
+│   ├── templates/
+│   │   ├── landing_page.html
+│   │   └── generate_statements.html
+│   ├── uploads/
+│   └── utils.py
+├── requirements.txt
+└── run.py
+```
 
-How it Works
-------------
+## API Endpoints
 
-### 1\. File Upload
+### 1. Generate Statements
+```http
+POST /api/process_statement
+Content-Type: multipart/form-data
+```
 
-Users upload two files:
+**Parameters:**
+- `template_file`: Word template file (.docx)
+- `data_file`: Excel data file (.xlsx)
+- `password_protection`: Boolean (optional)
 
--   **Template File (`.docx`)**: A Word document template with placeholders.
--   **Data File (`.xlsx`)**: An Excel file with client information.
+**Response:**
+```json
+{
+    "temp_id": "uuid-string",
+    "message": "Processing completed successfully.",
+    "download_link": "/api/download_statement/uuid-string"
+}
+```
 
-### 2\. Document Generation
+### 2. Check Progress
+```http
+GET /api/progress/<temp_id>
+```
 
-The tool fills the Word template with data from the Excel file and generates Word documents for each row in the Excel file.
+**Response:**
+```json
+{
+    "status": "Processing...",
+    "progress": "50%"
+}
+```
 
-### 3\. PDF Conversion
+### 3. Download Generated Files
+```http
+GET /api/download_statement/<temp_id>
+```
+Returns a ZIP file containing all generated PDFs.
 
-The generated Word documents are converted to PDF files.
+## Template Requirements
 
-### 4\. (Optional) Password Protection
+### Word Template
+- Use merge fields that match Excel column headers
+- Supported fields are marked with `{{ field_name }}`
+- Field names should match Excel headers exactly
 
-If the user chooses to enable password protection, the PDFs will be encrypted using the client's ID.
+### Excel Data File
+- First row must contain headers
+- Headers must match template merge fields
+- Must include 'name' or 'client name' column
+- Must include 'id' or 'client id' column for password protection
 
-### 5\. File Renaming
+## Security Features
+- Temporary file cleanup after 2 hours
+- Password protection option using client IDs
+- Secure filename handling
+- Input file validation
 
-The PDFs are renamed based on client names from the Excel data.
+## Error Handling
+The API returns appropriate HTTP status codes:
+- 200: Success
+- 400: Invalid input
+- 404: Resource not found
+- 408: Request timeout
+- 500: Server error
 
-### 6\. Progress Tracking
+## Development Setup
 
-The status of the document generation process can be tracked in real-time through an API endpoint.
+1. Install development dependencies:
+```bash
+pip install -r requirements-dev.txt
+```
 
-### 7\. Downloadable Zip
+2. Run the development server:
+```bash
+python run.py
+```
 
-Once the process is complete, users can download a zip file containing all the generated PDFs.
+## Testing
+```bash
+pytest tests/
+```
 
-Endpoints
----------
+## Contributing
+1. Fork the repository
+2. Create a feature branch
+3. Commit your changes
+4. Push to the branch
+5. Create a Pull Request
 
-### `/statement_generator` [GET]
-
-Renders the statement generator form where users can upload their files.
-
-### `/process_statement` [POST]
-
--   **Files**: `template_file`, `data_file`
--   **Body**: Optional parameter `password_protection` (checkbox, on or off)
-
-Submits the document generation process, which returns a `temp_id` for tracking progress.
-
-### `/progress/<temp_id>` [GET]
-
--   **Parameters**: `temp_id` (UUID)
-
-Returns the current progress of the document generation task for the specified `temp_id`.
-
-### `/download_statement/<temp_id>` [GET]
-
--   **Parameters**: `temp_id` (UUID)
-
-Returns a zip file containing all the generated PDFs for the specified `temp_id`.
-
-Example Usage
--------------
-
-1.  Navigate to `/statement_generator` to upload your template and data files.
-2.  Once the files are uploaded, the document generation process begins.
-3.  Check the progress of the task by visiting `/progress/<temp_id>`.
-4.  Once the task is complete, download the zip file from `/download_statement/<temp_id>`.
-
-Cleanup
--------
-
-The system automatically cleans up expired temporary downloads every 10 minutes. The temporary files are stored for 2 hours.
-
-Running the App
----------------
-
-To run the Flask application locally:
-
-1.  Ensure you have installed all the dependencies (`pip install -r requirements.txt`).
-2.  Run the app:
-
-bash
-
-Copy code
-
-`export FLASK_APP=app.py
-export FLASK_ENV=development
-flask run`
-
-1.  Open your browser and visit `http://127.0.0.1:5000` to use the application.
-
-Contributing
-------------
-
-Feel free to fork the repository and submit pull requests. If you find bugs or have suggestions, open an issue on the GitHub repository.
-
-License
--------
-
-This project is licensed under the MIT License.
+## License
+[MIT License](LICENSE)
