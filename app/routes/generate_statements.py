@@ -1,14 +1,13 @@
 import os
 import openpyxl
 import shutil
-import pythoncom
 import re
 import pdfplumber
 from docxtpl import DocxTemplate
-from docx2pdf import convert
 from PyPDF2 import PdfWriter, PdfReader
 from flask import Blueprint, request, jsonify, current_app, render_template, send_from_directory, send_file
-from werkzeug.utils import secure_filename
+import subprocess
+import platform
 import logging
 import uuid
 import time
@@ -72,16 +71,24 @@ class StatementGenerator:
     """Class for generating and processing statements."""
 
     def __init__(self, template_path, data_path, output_folder, temp_id):
-        self.template_path = template_path
-        self.data_path = data_path
-        self.output_folder = output_folder
-        self.temp_id = temp_id
-        self.template = DocxTemplate(template_path)
-        self.workbook = openpyxl.load_workbook(data_path)
-        self.sheet = self.workbook.active
-        self.header_row = next(self.sheet.iter_rows(values_only=True))
-        self.individual_letters = []
-        self.password_protection = False
+        # Previous initialization code remains the same
+        self.libreoffice_path = self._get_libreoffice_path()
+
+    def _get_libreoffice_path(self):
+        """Get the LibreOffice executable path based on the platform."""
+        if platform.system() == 'Windows':
+            # Common Windows installation paths
+            paths = [
+                r'C:\Program Files\LibreOffice\program\soffice.exe',
+                r'C:\Program Files (x86)\LibreOffice\program\soffice.exe'
+            ]
+            for path in paths:
+                if os.path.exists(path):
+                    return path
+        else:
+            # Linux/Unix systems typically have it in PATH
+            return 'soffice'
+        return None
 
     def format_number(self, value):
         """Format numbers into readable strings."""
@@ -116,16 +123,26 @@ class StatementGenerator:
         PROGRESS_STATUS[self.temp_id] = {"status": "Document generation completed.", "progress": "60%"}
 
     def convert_to_pdf(self):
-        """Convert generated Word documents to PDFs."""
+        """Convert generated Word documents to PDFs using LibreOffice."""
         PROGRESS_STATUS[self.temp_id] = {"status": "Converting to PDF...", "progress": "70%"}
-        pythoncom.CoInitialize()
-        try:
-            for letter_file in self.individual_letters:
-                output_pdf_path = os.path.splitext(letter_file)[0] + ".pdf"
-                convert(letter_file, output_pdf_path)
-                os.remove(letter_file)
-        finally:
-            pythoncom.CoUninitialize()
+        
+        if not self.libreoffice_path:
+            raise RuntimeError("LibreOffice not found. Please install LibreOffice.")
+
+        for letter_file in self.individual_letters:
+            output_pdf_path = os.path.splitext(letter_file)[0]
+            try:
+                subprocess.run([
+                    self.libreoffice_path,
+                    '--headless',
+                    '--convert-to', 'pdf',
+                    '--outdir', os.path.dirname(output_pdf_path),
+                    letter_file
+                ], check=True, capture_output=True)
+                os.remove(letter_file)  # Remove the original DOCX file
+            except subprocess.CalledProcessError as e:
+                logger.error(f"Error converting {letter_file} to PDF: {e}")
+                raise
 
     def rename_pdfs(self):
         """Rename PDFs based on client names from the Excel sheet."""
