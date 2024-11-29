@@ -94,13 +94,37 @@ class StatementGenerator:
             for path in paths:
                 if os.path.exists(path):
                     return path
+
         elif platform.system() == 'Linux':
-            # Specify the Linux path explicitly
-            return r'/usr/bin/soffice'
+            # Check the default Linux path
+            default_path = '/usr/bin/soffice'
+            if os.path.exists(default_path):
+                return default_path
+
+            # Search for the soffice binary in the file system
+            for root, dirs, files in os.walk('/'):
+                if 'soffice' in files:
+                    soffice_path = os.path.join(root, 'soffice')
+                    if os.access(soffice_path, os.X_OK):  # Check if it's executable
+                        return soffice_path
+
+            # If not found, return None
+            print("LibreOffice executable not found on Linux.")
+            return None
+
         else:
             # Unix-like systems typically have it in PATH
-            return 'soffice'
+            return 'soffice'  # Assume soffice is in PATH
+
+        # Fallback if no path is found
         return None
+    
+    libreoffice_path = self._get_libreoffice_path()
+    if libreoffice_path:
+        print(f"LibreOffice found at: {libreoffice_path}")
+    else:
+        print("LibreOffice not found. Please check the installation.")
+
 
 
     def format_number(self, value):
