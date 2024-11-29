@@ -5,15 +5,61 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Statement Generator</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+        }
+        .hero-section {
+            background-color: #f8f9fa;
+            padding: 50px 0;
+        }
+        .features-section {
+            background-color: #ffffff;
+            padding: 50px 0;
+        }
+        .image-placeholder {
+            max-height: 300px;
+            object-fit: cover;
+        }
+    </style>
 </head>
 <body>
-    <div class="container text-center my-5">
+    <!-- Hero Section -->
+    <div class="container text-center hero-section">
         <h1 class="display-4">Welcome to the Statement Generator</h1>
-        <p class="lead">Easily generate and manage your statements with our powerful tool.</p>
+        <p class="lead">Seamlessly merge Word documents and Excel files into polished PDF statements.</p>
         <a href="/api/statement_generator" class="btn btn-primary btn-lg">Start Generating Statements</a>
         <div class="mt-4">
-            <img src="https://via.placeholder.com/600x400" alt="Statement Generator Illustration" class="img-fluid">
+            <img src="https://via.placeholder.com/600x400" alt="API Showcase" class="img-fluid image-placeholder">
         </div>
     </div>
+
+    <!-- Features Section -->
+    <div class="container features-section">
+        <div class="row text-center">
+            <div class="col-md-4">
+                <img src="https://via.placeholder.com/300" alt="Feature 1" class="img-fluid image-placeholder mb-3">
+                <h5>Easy to Use</h5>
+                <p>Upload your files, and our API does the heavy lifting for you in minutes.</p>
+            </div>
+            <div class="col-md-4">
+                <img src="https://via.placeholder.com/300" alt="Feature 2" class="img-fluid image-placeholder mb-3">
+                <h5>Secure and Reliable</h5>
+                <p>Your data is processed securely with industry-standard encryption.</p>
+            </div>
+            <div class="col-md-4">
+                <img src="https://via.placeholder.com/300" alt="Feature 3" class="img-fluid image-placeholder mb-3">
+                <h5>Download with Ease</h5>
+                <p>Receive your files packaged in a convenient ZIP for easy download.</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="text-center py-3 bg-light">
+        <p class="mb-0">&copy; 2024 Statement Generator. All rights reserved.</p>
+    </footer>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
