@@ -7,11 +7,12 @@ import pdfplumber
 from docxtpl import DocxTemplate
 from docx2pdf import convert
 from PyPDF2 import PdfWriter, PdfReader
-from flask import Blueprint, request, jsonify, current_app, render_template, send_from_directory
+from flask import Blueprint, request, jsonify, current_app, render_template, send_from_directory, send_file
 from werkzeug.utils import secure_filename
 import logging
 import uuid
 import time
+import zipfile
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
@@ -97,7 +98,7 @@ class StatementGenerator:
 
     def generate_documents(self):
         """Generate Word documents for each row in the data."""
-        PROGRESS_STATUS[self.temp_id] = "Generating Word documents..."
+        PROGRESS_STATUS[self.temp_id] = {"status": "Generating Word documents...", "progress": "10%"}
         total_rows = self.sheet.max_row - 1  # Exclude header
         for index, row in enumerate(self.sheet.iter_rows(min_row=2, values_only=True), start=1):
             context = {
@@ -110,13 +111,13 @@ class StatementGenerator:
             self.individual_letters.append(output_path)
 
             # Update progress
-            PROGRESS_STATUS[self.temp_id] = f"Processing row {index}/{total_rows}..."
+            PROGRESS_STATUS[self.temp_id] = {"status": f"Processing row {index}/{total_rows}...", "progress": "50%"}
 
-        PROGRESS_STATUS[self.temp_id] = "Document generation completed."
+        PROGRESS_STATUS[self.temp_id] = {"status": "Document generation completed.", "progress": "60%"}
 
     def convert_to_pdf(self):
         """Convert generated Word documents to PDFs."""
-        PROGRESS_STATUS[self.temp_id] = "Converting to PDF..."
+        PROGRESS_STATUS[self.temp_id] = {"status": "Converting to PDF...", "progress": "70%"}
         pythoncom.CoInitialize()
         try:
             for letter_file in self.individual_letters:
@@ -128,7 +129,7 @@ class StatementGenerator:
 
     def rename_pdfs(self):
         """Rename PDFs based on client names from the Excel sheet."""
-        PROGRESS_STATUS[self.temp_id] = "Renaming PDFs..."
+        PROGRESS_STATUS[self.temp_id] = {"status": "Renaming PDFs...", "progress": "80%"}
         name_column_index = next(
             (index for index, header in enumerate(self.header_row)
              if header and header.strip().lower() in ['name', 'client name', 'member name']), None)
@@ -145,7 +146,7 @@ class StatementGenerator:
 
     def apply_password_protection(self):
         """Apply password protection to PDFs using IDs."""
-        PROGRESS_STATUS[self.temp_id] = "Applying password protection..."
+        PROGRESS_STATUS[self.temp_id] = {"status": "Applying password protection...", "progress": "99%"}
         id_column_index = next(
             (index for index, header in enumerate(self.header_row)
              if header and header.strip().lower() in ['id', 'client id', 'member id']), None)
@@ -174,15 +175,27 @@ class StatementGenerator:
             if password_protection:
                 self.apply_password_protection()
             self.rename_pdfs()
-            PROGRESS_STATUS[self.temp_id] = "Completed!"
+            PROGRESS_STATUS[self.temp_id] = {"status": "Completed", "progress": "100%"}
+
         except Exception as e:
             logger.error(f"Error during statement generation: {e}")
-            PROGRESS_STATUS[self.temp_id] = "Error occurred during processing."
+            PROGRESS_STATUS[self.temp_id] = {"status": "Error occurred during processing.", "progress": "0%"}
 
 @generate_stats_bp.route('/progress/<temp_id>', methods=['GET'])
 def get_progress(temp_id):
     """Check the progress of a statement generation task."""
-    return jsonify({"progress": PROGRESS_STATUS.get(temp_id, "Unknown ID")})
+    task_status = PROGRESS_STATUS.get(temp_id, None)
+    
+    if task_status is None:
+        return jsonify({"status": "Error", "message": "Unknown ID"}), 404
+    
+    status = task_status.get('status', 'Processing')
+    progress = task_status.get('progress', '0%')
+    
+    return jsonify({
+        "status": status,
+        "progress": progress
+    })
 
 def generate_temp_id():
     """Generate a temporary ID for downloads."""
@@ -217,7 +230,7 @@ def process_statement():
     try:
         future.result(timeout=300)  # Timeout set to 300 seconds (5 minutes)
         # Ensure progress is marked as completed before responding
-        PROGRESS_STATUS[temp_id] = "Completed!"
+        PROGRESS_STATUS[temp_id] = {"status": "Completed", "progress": "100%"}
 
         # Generate the download link (assuming the files are available)
         download_link = f"/downloads/{temp_id}"
@@ -228,29 +241,52 @@ def process_statement():
             "download_link": download_link
         }), 200
     except FuturesTimeoutError:
-        PROGRESS_STATUS[temp_id] = "Task timed out."
+        PROGRESS_STATUS[temp_id] = {"status": "Task Timed out", "progress": "0%"}
         return jsonify({"temp_id": temp_id, "message": "Processing timed out."}), 408
     except Exception as e:
         logger.error(f"Error during processing: {e}")
-        PROGRESS_STATUS[temp_id] = "Error occurred."
+        PROGRESS_STATUS[temp_id] = {"status": "Error", "progress": "0%"}
         return jsonify({"temp_id": temp_id, "message": "An error occurred during processing."}), 500
 
-@generate_stats_bp.route('/downloads/<temp_id>/<filename>', methods=['GET'])
-def download_file(temp_id, filename):
-    """Serve the generated file for download."""
-    folder_path = TEMP_DOWNLOADS.get(temp_id, {}).get('folder')
-    if not folder_path or not os.path.exists(os.path.join(folder_path, filename)):
-        return jsonify({"message": "File not found."}), 404
-    return send_from_directory(folder_path, filename, as_attachment=True)
-
-@generate_stats_bp.route('/downloads/<temp_id>', methods=['GET'])
+@generate_stats_bp.route('/download_statement/<temp_id>', methods=['GET'])
 def download_all_files(temp_id):
-    """Prepare a zip of all files for a temp_id."""
-    folder_path = TEMP_DOWNLOADS.get(temp_id, {}).get('folder')
-    if not folder_path or not os.path.exists(folder_path):
-        return jsonify({"message": "Files not found."}), 404
+    """Download all generated PDF files as a zip."""
+    download_info = TEMP_DOWNLOADS.get(temp_id)
+    logger.info(f"Download info: {download_info}")
+    if not download_info:
+        return jsonify({"message": "Invalid download ID."}), 404
+    
+    base_path = current_app.config['UPLOAD_FOLDER']
+    folder_path = os.path.join(base_path, temp_id)
+    folder_path = os.path.abspath(folder_path)
+    
+    logger.info(f"Looking for files in: {folder_path}")
+    if not os.path.exists(folder_path):
+        logger.error(f"Folder not found: {folder_path}")
+        return jsonify({"message": "Download folder not found."}), 404
 
-    zip_filename = f"{temp_id}_downloads.zip"
-    zip_filepath = os.path.join(folder_path, zip_filename)
-    shutil.make_archive(zip_filepath.replace('.zip', ''), 'zip', folder_path)
-    return send_from_directory(folder_path, zip_filename, as_attachment=True)
+    try:
+        pdf_files = [f for f in os.listdir(folder_path) if f.endswith('.pdf')]
+        logger.info(f"Found PDF files: {pdf_files}")
+        if not pdf_files:
+            return jsonify({"message": "No PDF files found to download."}), 404
+
+        zip_filename = f"statements_{temp_id}.zip"
+        zip_filepath = os.path.join(folder_path, zip_filename)
+        
+        with zipfile.ZipFile(zip_filepath, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for pdf in pdf_files:
+                file_path = os.path.join(folder_path, pdf)
+                zipf.write(file_path, pdf)
+        
+        return send_file(
+            zip_filepath,
+            mimetype='application/zip',
+            as_attachment=True,
+            download_name=zip_filename
+        )
+        
+    except Exception as e:
+        logger.error(f"Error creating zip file: {e}")
+        return jsonify({"message": f"Error creating download file: {str(e)}"}), 500
+

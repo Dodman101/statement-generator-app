@@ -12,8 +12,8 @@ def create_app():
     app.config['SECRET_KEY'] = os.getenv('STATEMENT_GENERATOR_KEY', 'DEFAULT_API_KEY')
 
     # Set configuration variables
-    app.config['UPLOAD_FOLDER'] = 'app/uploads'
-    app.config['OUTPUT_FOLDER'] = 'app/uploads/outputs'
+    app.config['UPLOAD_FOLDER'] = os.path.abspath('app/uploads')
+    app.config['OUTPUT_FOLDER'] = os.path.normpath('uploads/outputs')
 
     # Create necessary folders
     create_folders(app)
