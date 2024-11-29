@@ -71,7 +71,16 @@ class StatementGenerator:
     """Class for generating and processing statements."""
 
     def __init__(self, template_path, data_path, output_folder, temp_id):
-        # Previous initialization code remains the same
+        self.template_path = template_path
+        self.data_path = data_path
+        self.output_folder = output_folder
+        self.temp_id = temp_id
+        self.template = DocxTemplate(template_path)
+        self.workbook = openpyxl.load_workbook(data_path)
+        self.sheet = self.workbook.active
+        self.header_row = next(self.sheet.iter_rows(values_only=True))
+        self.individual_letters = []
+        self.password_protection = False
         self.libreoffice_path = self._get_libreoffice_path()
 
     def _get_libreoffice_path(self):
