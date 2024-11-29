@@ -117,7 +117,7 @@
                             return;
                         }
                         retries++;
-    
+
                         fetch(statusUrl)
                             .then(response => {
                                 if (!response.ok) {
@@ -127,17 +127,17 @@
                             })
                             .then(statusData => {
                                 console.log('Status response:', statusData);
-    
+
                                 if (statusData.status === 'Processing') {
                                     document.getElementById('progress-message').textContent = 'Processing statements...';
-    
+
                                     if (statusData.progress) {
                                         const progress = statusData.progress.replace('%', ''); // Extract numeric value
                                         document.getElementById('progress-bar').style.width = statusData.progress;
                                         document.getElementById('progress-bar').setAttribute('aria-valuenow', progress);
                                     }
-                                } else if (statusData.status === 'Complete') {
-                                    clearInterval(pollStatus);
+                                } else if (statusData.status === 'Completed') {
+                                    clearInterval(pollStatus); // Stop polling once completed
                                     document.getElementById('progress-message').textContent = 'Processing complete!';
                                     document.getElementById('progress-bar').style.width = '100%';
                                     document.getElementById('progress-bar').setAttribute('aria-valuenow', '100');
