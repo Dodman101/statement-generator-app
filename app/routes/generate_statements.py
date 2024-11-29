@@ -94,10 +94,14 @@ class StatementGenerator:
             for path in paths:
                 if os.path.exists(path):
                     return path
+        elif platform.system() == 'Linux':
+            # Specify the Linux path explicitly
+            return r'/usr/bin/soffice'
         else:
-            # Linux/Unix systems typically have it in PATH
+            # Unix-like systems typically have it in PATH
             return 'soffice'
         return None
+
 
     def format_number(self, value):
         """Format numbers into readable strings."""
