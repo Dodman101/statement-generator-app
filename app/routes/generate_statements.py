@@ -39,10 +39,17 @@ def allowed_file(filename):
 
 def create_temp_folder(temp_id):
     """Create a temporary folder for a specific temp_id."""
-    # Use /tmp for Linux systems
+    # Use /tmp for Linux systems, fallback to app-defined folder for other platforms
     base_folder = '/tmp' if platform.system() == 'Linux' else current_app.config['UPLOAD_FOLDER']
     folder_path = os.path.join(base_folder, 'statement_generator', temp_id)
-    os.makedirs(folder_path, exist_ok=True)
+    
+    # Ensure the folder exists
+    if not os.path.exists(folder_path):
+        print(f"Creating folder: {folder_path}")
+        os.makedirs(folder_path, exist_ok=True)
+    else:
+        print(f"Folder already exists: {folder_path}")
+    
     return folder_path
 
 def cleanup_expired_downloads():
@@ -305,6 +312,11 @@ def process_statement():
 
     temp_id, expiry_time = generate_temp_id()
     output_folder = create_temp_folder(temp_id)
+    
+    if not os.path.exists(output_folder):
+        print(f"Creating output folder: {output_folder}")
+        os.makedirs(output_folder, exist_ok=True)
+
     TEMP_DOWNLOADS[temp_id] = {'folder': output_folder, 'expiry': expiry_time}
 
     generator = StatementGenerator(template_file, data_file, output_folder, temp_id)
