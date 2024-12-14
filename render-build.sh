@@ -1,20 +1,19 @@
 #!/bin/bash
 
-# Exit on any error
+# Exit on error
 set -e
 
-# Update package list and install dependencies
-apt-get update
-apt-get install -y --no-install-recommends \
+# Update and install packages with sudo
+sudo apt-get update 
+sudo apt-get install -y --no-install-recommends \
     libreoffice \
     libreoffice-writer \
     fonts-liberation \
     python3-uno \
     xvfb
 
-# Clean up to reduce image size
-apt-get clean
-rm -rf /var/lib/apt/lists/*
+# Clean up
+sudo apt-get clean
 
 # Install Python dependencies
 pip install -r requirements.txt
