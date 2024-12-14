@@ -45,8 +45,9 @@ def create_temp_folder(temp_id):
     
     # Ensure the folder exists
     if not os.path.exists(folder_path):
-        print(f"Creating folder: {folder_path}")
+        logger.info(f"Creating folder at path: {folder_path}")
         os.makedirs(folder_path, exist_ok=True)
+        logger.info(f"Folder created successfully: {os.path.exists(folder_path)}")
     else:
         print(f"Folder already exists: {folder_path}")
     
@@ -156,18 +157,39 @@ class StatementGenerator:
         """Generate Word documents for each row in the data."""
         PROGRESS_STATUS[self.temp_id] = {"status": "Generating Word documents...", "progress": "10%"}
         total_rows = self.sheet.max_row - 1  # Exclude header
-        for index, row in enumerate(self.sheet.iter_rows(min_row=2, values_only=True), start=1):
-            context = {
-                header.strip().replace(' ', '_'): self.format_number(value)
-                for header, value in zip(self.header_row, row) if header
-            }
-            output_path = os.path.join(self.output_folder, f"output_{row[0]}.docx")
-            self.template.render(context)
-            self.template.save(output_path)
-            self.individual_letters.append(output_path)
+        
+        try:
+            for index, row in enumerate(self.sheet.iter_rows(min_row=2, values_only=True), start=1):
+                # Create a sanitized filename from the first column value
+                safe_filename = re.sub(r'[<>:"/\\|?*]', '_', str(row[0]))
+                
+                # Create the output path directly in the output folder
+                output_path = os.path.join(self.output_folder, f"output_{safe_filename}.docx")
+                
+                # Ensure the parent directory exists
+                os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                
+                # Create the context dictionary for template rendering
+                context = {
+                    header.strip().replace(' ', '_'): self.format_number(value)
+                    for header, value in zip(self.header_row, row) if header
+                }
+                
+                # Render and save the document
+                self.template.render(context)
+                self.template.save(output_path)
+                self.individual_letters.append(output_path)
 
-            # Update progress
-            PROGRESS_STATUS[self.temp_id] = {"status": f"Processing row {index}/{total_rows}...", "progress": "50%"}
+                # Update progress
+                progress_percent = int((index / total_rows) * 40) + 10  # Scale from 10% to 50%
+                PROGRESS_STATUS[self.temp_id] = {
+                    "status": f"Processing row {index}/{total_rows}...", 
+                    "progress": f"{progress_percent}%"
+                }
+
+        except Exception as e:
+            logger.error(f"Error generating document: {str(e)}")
+            raise RuntimeError(f"Failed to generate document: {str(e)}")
 
         PROGRESS_STATUS[self.temp_id] = {"status": "Document generation completed.", "progress": "60%"}
 
