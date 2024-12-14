@@ -4,8 +4,8 @@
 set -e
 
 # Update and install packages with sudo
-sudo apt-get update 
-sudo apt-get install -y --no-install-recommends \
+apt-get update 
+apt-get install -y --no-install-recommends \
     libreoffice \
     libreoffice-writer \
     fonts-liberation \
@@ -13,7 +13,7 @@ sudo apt-get install -y --no-install-recommends \
     xvfb
 
 # Clean up
-sudo apt-get clean
+apt-get clean
 
 # Install Python dependencies
 pip install -r requirements.txt
