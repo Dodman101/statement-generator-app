@@ -5,7 +5,7 @@ import re
 import pdfplumber
 from docxtpl import DocxTemplate
 from PyPDF2 import PdfWriter, PdfReader
-from flask import Blueprint, request, jsonify, current_app, render_template, send_from_directory, send_file
+from flask import Blueprint, request, jsonify, current_app, render_template, send_file
 import subprocess
 import platform
 import logging
@@ -34,14 +34,14 @@ PROGRESS_STATUS = {}
 # Thread pool for background tasks
 executor = ThreadPoolExecutor(max_workers=5)
 
-# Utility functions
 def allowed_file(filename):
-    """Check if a file has an allowed extension."""
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 def create_temp_folder(temp_id):
     """Create a temporary folder for a specific temp_id."""
-    folder_path = os.path.join(current_app.config['UPLOAD_FOLDER'], temp_id)
+    # Use /tmp for Linux systems
+    base_folder = '/tmp' if platform.system() == 'Linux' else current_app.config['UPLOAD_FOLDER']
+    folder_path = os.path.join(base_folder, 'statement_generator', temp_id)
     os.makedirs(folder_path, exist_ok=True)
     return folder_path
 
@@ -54,22 +54,22 @@ def cleanup_expired_downloads():
         download_info = TEMP_DOWNLOADS.pop(temp_id, None)
         if download_info:
             folder_path = download_info['folder']
-            shutil.rmtree(folder_path, ignore_errors=True)
-            logger.info(f"Cleaned up expired files for temp_id: {temp_id}")
+            try:
+                shutil.rmtree(folder_path, ignore_errors=True)
+                logger.info(f"Cleaned up expired files for temp_id: {temp_id}")
+            except Exception as e:
+                logger.error(f"Error cleaning up temp_id {temp_id}: {e}")
 
 cleanup_stop_event = Event()
 
 def schedule_cleanup():
-    """Background task to periodically clean up expired downloads."""
     while not cleanup_stop_event.is_set():
         cleanup_expired_downloads()
-        cleanup_stop_event.wait(600)  # Sleep for 10 minutes or exit on event
+        cleanup_stop_event.wait(600)
 
 executor.submit(schedule_cleanup)
 
 class StatementGenerator:
-    """Class for generating and processing statements."""
-
     def __init__(self, template_path, data_path, output_folder, temp_id):
         self.template_path = template_path
         self.data_path = data_path
@@ -84,9 +84,44 @@ class StatementGenerator:
         self.libreoffice_path = self._get_libreoffice_path()
 
     def _get_libreoffice_path(self):
-        """Get the LibreOffice executable path based on the platform."""
-        if platform.system() == 'Windows':
-            # Common Windows installation paths
+        """Get the LibreOffice executable path with enhanced Linux support."""
+        if platform.system() == 'Linux':
+            # Common Linux paths
+            linux_paths = [
+                '/usr/bin/soffice',
+                '/usr/bin/libreoffice',
+                '/usr/lib/libreoffice/program/soffice',
+                '/opt/libreoffice*/program/soffice'
+            ]
+            
+            # Try common paths first
+            for path in linux_paths:
+                if '*' in path:
+                    # Handle wildcard paths
+                    import glob
+                    matching_paths = glob.glob(path)
+                    if matching_paths:
+                        return matching_paths[0]
+                elif os.path.exists(path):
+                    return path
+            
+            # If not found in common paths, try which command
+            try:
+                result = subprocess.run(['which', 'soffice'], capture_output=True, text=True)
+                if result.returncode == 0:
+                    return result.stdout.strip()
+            except subprocess.SubprocessError:
+                pass
+            
+            # If still not found, try snap installation
+            snap_path = '/snap/bin/libreoffice'
+            if os.path.exists(snap_path):
+                return snap_path
+            
+            logger.warning("LibreOffice not found in common locations. Please install it using: sudo apt-get install libreoffice")
+            return None
+            
+        elif platform.system() == 'Windows':
             paths = [
                 r'C:\Program Files\LibreOffice\program\soffice.exe',
                 r'C:\Program Files (x86)\LibreOffice\program\soffice.exe'
@@ -94,30 +129,8 @@ class StatementGenerator:
             for path in paths:
                 if os.path.exists(path):
                     return path
-
-        elif platform.system() == 'Linux':
-            # Check the default Linux path
-            default_path = '/usr/bin/soffice'
-            if os.path.exists(default_path):
-                return default_path
-
-            # Search for the soffice binary in the file system
-            for root, dirs, files in os.walk('/'):
-                if 'soffice' in files:
-                    soffice_path = os.path.join(root, 'soffice')
-                    if os.access(soffice_path, os.X_OK):  # Check if it's executable
-                        return soffice_path
-
-            # If not found, return None
-            print("LibreOffice executable not found on Linux.")
-            return None
-
-        else:
-            # Unix-like systems typically have it in PATH
-            return 'soffice'  # Assume soffice is in PATH
-
-        # Fallback if no path is found
-        return None
+        
+        return 'soffice'  # Default fallback
 
     def format_number(self, value):
         """Format numbers into readable strings."""
@@ -152,25 +165,51 @@ class StatementGenerator:
         PROGRESS_STATUS[self.temp_id] = {"status": "Document generation completed.", "progress": "60%"}
 
     def convert_to_pdf(self):
-        """Convert generated Word documents to PDFs using LibreOffice."""
+        """Convert generated Word documents to PDFs using LibreOffice with enhanced error handling."""
         PROGRESS_STATUS[self.temp_id] = {"status": "Converting to PDF...", "progress": "70%"}
         
         if not self.libreoffice_path:
-            raise RuntimeError("LibreOffice not found. Please install LibreOffice.")
+            raise RuntimeError("LibreOffice not found. Please install LibreOffice using: sudo apt-get install libreoffice")
 
         for letter_file in self.individual_letters:
             output_pdf_path = os.path.splitext(letter_file)[0]
             try:
-                subprocess.run([
+                # Add environment variables for Linux
+                env = os.environ.copy()
+                if platform.system() == 'Linux':
+                    env['HOME'] = '/tmp'  # Set HOME to prevent user profile issues
+                    
+                cmd = [
                     self.libreoffice_path,
                     '--headless',
                     '--convert-to', 'pdf',
                     '--outdir', os.path.dirname(output_pdf_path),
                     letter_file
-                ], check=True, capture_output=True)
-                os.remove(letter_file)  # Remove the original DOCX file
+                ]
+                
+                process = subprocess.run(
+                    cmd,
+                    env=env,
+                    check=True,
+                    capture_output=True,
+                    timeout=60  # Add timeout
+                )
+                
+                # Check if PDF was actually created
+                expected_pdf = f"{os.path.splitext(letter_file)[0]}.pdf"
+                if not os.path.exists(expected_pdf):
+                    raise RuntimeError(f"PDF file not created: {expected_pdf}")
+                    
+                os.remove(letter_file)  # Remove original DOCX
+                
             except subprocess.CalledProcessError as e:
-                logger.error(f"Error converting {letter_file} to PDF: {e}")
+                logger.error(f"LibreOffice conversion error: {e.stderr.decode()}")
+                raise RuntimeError(f"PDF conversion failed: {e.stderr.decode()}")
+            except subprocess.TimeoutExpired:
+                logger.error("PDF conversion timed out")
+                raise RuntimeError("PDF conversion timed out")
+            except Exception as e:
+                logger.error(f"Unexpected error during PDF conversion: {e}")
                 raise
 
     def rename_pdfs(self):
