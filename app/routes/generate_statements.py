@@ -375,11 +375,10 @@ def download_all_files(temp_id):
     if not download_info:
         return jsonify({"message": "Invalid download ID."}), 404
     
-    base_path = current_app.config['UPLOAD_FOLDER']
-    folder_path = os.path.join(base_path, temp_id)
-    folder_path = os.path.abspath(folder_path)
-    
+    # Use the folder path from download_info instead of constructing it
+    folder_path = download_info['folder']
     logger.info(f"Looking for files in: {folder_path}")
+    
     if not os.path.exists(folder_path):
         logger.error(f"Folder not found: {folder_path}")
         return jsonify({"message": "Download folder not found."}), 404
