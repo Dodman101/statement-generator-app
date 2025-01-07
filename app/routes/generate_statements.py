@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 generate_stats_bp = Blueprint('generate_stats', __name__)
 
 # Allowed file extensions for uploads
-ALLOWED_EXTENSIONS = {'docx', 'xlsx'}
+ALLOWED_EXTENSIONS = {'docx', 'doc', 'xlsx'}
 
 # Temporary downloads and progress tracking
 TEMP_DOWNLOADS = {}
