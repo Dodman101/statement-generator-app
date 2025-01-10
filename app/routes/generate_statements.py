@@ -276,11 +276,18 @@ class StatementGenerator:
                 if client_id is None:
                     raise ValueError(f"Missing ID for file: {pdf_filename}")
                 
-                client_id = str(client_id)  # Ensure the ID is a string
+                client_id = str(client_id)  # Ensure ID is a string
                 pdf_reader = PdfReader(full_path)
                 pdf_writer = PdfWriter()
-                pdf_writer.clone_reader_document_root(pdf_reader)
+                
+                # Copy each page explicitly
+                for page in pdf_reader.pages:
+                    pdf_writer.add_page(page)
+                
+                # Encrypt the PDF with the client ID
                 pdf_writer.encrypt(client_id)
+                
+                # Write the protected PDF back to the file
                 with open(full_path, 'wb') as protected_file:
                     pdf_writer.write(protected_file)
 
