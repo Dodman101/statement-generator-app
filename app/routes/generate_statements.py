@@ -27,12 +27,12 @@ logger = logging.getLogger(__name__)
 generate_stats_bp = Blueprint('generate_stats', __name__)
 
 # Constants
-ALLOWED_EXTENSIONS = {'docx' 'doc', 'xlsx'}
+ALLOWED_EXTENSIONS = {'docx', 'doc', 'xlsx'}
 MAX_WORKERS = 5
 DOWNLOAD_EXPIRY_HOURS = 2
 TASK_TIMEOUT_SECONDS = 300
 CLEANUP_INTERVAL_SECONDS = 600
-ID_COLUMN_ALIASES = ['id', 'client id', 'member id', 'policy_no']
+ID_COLUMN_ALIASES = ['id', 'client id', 'member id', 'policy_no', 'id number']
 NAME_COLUMN_ALIASES = ['name', 'client name', 'member name']
 
 # Global state
