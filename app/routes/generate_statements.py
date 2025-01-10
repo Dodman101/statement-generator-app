@@ -272,10 +272,15 @@ class StatementGenerator:
             if pdf_filename.endswith(".pdf"):
                 full_path = os.path.join(self.output_folder, pdf_filename)
                 client_id = row[id_column_index]
+
+                if client_id is None:
+                    raise ValueError(f"Missing ID for file: {pdf_filename}")
+                
+                client_id = str(client_id)  # Ensure the ID is a string
                 pdf_reader = PdfReader(full_path)
                 pdf_writer = PdfWriter()
                 pdf_writer.clone_reader_document_root(pdf_reader)
-                pdf_writer.encrypt(str(client_id))
+                pdf_writer.encrypt(client_id)
                 with open(full_path, 'wb') as protected_file:
                     pdf_writer.write(protected_file)
 
