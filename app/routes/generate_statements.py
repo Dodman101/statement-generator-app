@@ -263,7 +263,7 @@ class StatementGenerator:
         PROGRESS_STATUS[self.temp_id] = {"status": "Applying password protection...", "progress": "99%"}
         id_column_index = next(
             (index for index, header in enumerate(self.header_row)
-             if header and header.strip().lower() in ['id', 'client id', 'member id']), None)
+             if header and header.strip().lower() in ['id', 'client id', 'member id', 'id number']), None)
 
         if id_column_index is None:
             raise ValueError("No 'ID' column found in the Excel headers.")
