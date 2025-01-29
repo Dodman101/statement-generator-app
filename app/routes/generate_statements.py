@@ -161,7 +161,7 @@ class StatementGenerator:
         try:
             for index, row in enumerate(self.sheet.iter_rows(min_row=2, values_only=True), start=1):
                 # Create a sanitized filename from the first column value
-                safe_filename = re.sub(r'[<>:"/\\|?*]', '_', str(row[0]))
+                safe_filename = re.sub(r'[<>:"/\\|?*]', '_', str(row[2]))
                 
                 # Create the output path directly in the output folder
                 output_path = os.path.join(self.output_folder, f"output_{safe_filename}.docx")
