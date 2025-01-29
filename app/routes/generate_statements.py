@@ -251,7 +251,7 @@ class StatementGenerator:
              if header and header.strip().lower() in ['name', 'client name', 'member name']), None)
         id_column_index = next(
             (index for index, header in enumerate(self.header_row)
-             if header and header.strip().lower() in ['id', 'client id', 'member id']), None)
+             if header and header.strip().lower() in ['id', 'client id', 'member id', 'id number']), None)
 
         if name_column_index is None:
             raise ValueError("No 'name' column found in the Excel headers.")
@@ -277,7 +277,7 @@ class StatementGenerator:
                     old_path = os.path.join(self.output_folder, filename)
                     
                     if current_id in id_to_name:
-                        new_name = f"{id_to_name[current_id]}_{current_id}.pdf"
+                        new_name = f"{id_to_name[current_id]}.pdf"
                         new_path = os.path.join(self.output_folder, new_name)
                         
                         if os.path.exists(new_path):
