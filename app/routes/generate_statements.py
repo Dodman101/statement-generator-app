@@ -255,7 +255,7 @@ class StatementGenerator:
             if pdf_filename.endswith(".pdf"):
                 full_path = os.path.join(self.output_folder, pdf_filename)
                 client_name = row[name_column_index]
-                sanitized_name = re.sub(r'[<>:"/\\|?*]', '_', str(client_name).strip().replace(" ", "_"))
+                sanitized_name = re.sub(r'[<>:"/\\|?*]', '_', str(client_name).strip())
                 shutil.move(full_path, os.path.join(self.output_folder, f"{sanitized_name}.pdf"))
 
     def apply_password_protection(self):
