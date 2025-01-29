@@ -242,21 +242,55 @@ class StatementGenerator:
                 raise
 
     def rename_pdfs(self):
-        """Rename PDFs based on client names from the Excel sheet."""
+        """Rename PDFs based on client names and IDs from the Excel sheet."""
         PROGRESS_STATUS[self.temp_id] = {"status": "Renaming PDFs...", "progress": "80%"}
+        
+        # Get column indices for name and ID
         name_column_index = next(
             (index for index, header in enumerate(self.header_row)
              if header and header.strip().lower() in ['name', 'client name', 'member name']), None)
+        id_column_index = next(
+            (index for index, header in enumerate(self.header_row)
+             if header and header.strip().lower() in ['id', 'client id', 'member id']), None)
 
         if name_column_index is None:
             raise ValueError("No 'name' column found in the Excel headers.")
+        if id_column_index is None:
+            raise ValueError("No 'ID' column found in the Excel headers.")
 
-        for row, pdf_filename in zip(self.sheet.iter_rows(min_row=2, values_only=True), os.listdir(self.output_folder)):
-            if pdf_filename.endswith(".pdf"):
-                full_path = os.path.join(self.output_folder, pdf_filename)
-                client_name = row[name_column_index]
-                sanitized_name = re.sub(r'[<>:"/\\|?*]', '_', str(client_name).strip())
-                shutil.move(full_path, os.path.join(self.output_folder, f"{sanitized_name}.pdf"))
+        # Create mappings from ID to names
+        id_to_name = {}
+        for row in self.sheet.iter_rows(min_row=2, values_only=True):
+            client_id = str(row[id_column_index]).strip()
+            client_name = str(row[name_column_index]).strip()
+            sanitized_id = re.sub(r'[^a-zA-Z0-9]', '_', client_id)
+            sanitized_name = re.sub(r'[<>:"/\\|?*]', '_', client_name)
+            
+            id_to_name[client_id] = sanitized_name
+            id_to_name[sanitized_id] = sanitized_name
+
+        # Iterate over PDF files and rename them properly
+        for filename in os.listdir(self.output_folder):
+            if filename.endswith(".pdf"):
+                try:
+                    current_id = filename.replace("output_", "").replace(".pdf", "").strip()
+                    old_path = os.path.join(self.output_folder, filename)
+                    
+                    if current_id in id_to_name:
+                        new_name = f"{id_to_name[current_id]}_{current_id}.pdf"
+                        new_path = os.path.join(self.output_folder, new_name)
+                        
+                        if os.path.exists(new_path):
+                            base, ext = os.path.splitext(new_name)
+                            new_name = f"{base}_{str(uuid.uuid4())[:8]}{ext}"
+                            new_path = os.path.join(self.output_folder, new_name)
+                        
+                        shutil.move(old_path, new_path)
+                        logger.info(f"Renamed PDF: {filename} -> {new_name}")
+                    else:
+                        logger.warning(f"No matching name found for ID: {current_id}")
+                except Exception as e:
+                    logger.error(f"Error renaming file {filename}: {str(e)}")
 
     def apply_password_protection(self):
         """Apply password protection to PDFs using IDs."""
