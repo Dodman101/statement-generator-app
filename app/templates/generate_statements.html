@@ -7,15 +7,12 @@
     <link type="image/png" sizes="16x16" rel="icon" href="{{ url_for('static', filename='img/icons8-website-clouds-16.png') }}">
     <!-- Bootstrap CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .success { color: green; }
+        .error { color: red; }
+        #progress-bar { transition: width 0.4s ease; }
+    </style>
 </head>
-<style>
-    .success {
-        color: green;
-    }
-    .error {
-        color: red;
-    }
-</style>
 <body>
     <!-- Flash Messages Display -->
     {% with messages = get_flashed_messages(with_categories=true) %}
@@ -51,8 +48,10 @@
                         </label>
                     </div>
 
+                    <div id="form-error" class="alert alert-danger" style="display:none;"></div>
+
                     <div class="d-grid">
-                        <button type="submit" class="btn btn-success">Generate Statements</button>
+                        <button type="submit" id="submit-btn" class="btn btn-success">Generate Statements</button>
                     </div>
                 </form>
 
@@ -66,7 +65,7 @@
 
                 <!-- Display the download link after processing -->
                 <div id="download-section" class="mt-4" style="display:none;">
-                    <p>Statements are ready for download! <a id="download-link" href="#">Download Now</a></p>
+                    <p class="success">Statements are ready for download! <a id="download-link" href="#">Download Now</a></p>
                 </div>
             </div>
         </div>
@@ -75,97 +74,119 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 
     <script>
-        document.getElementById('generate-form').addEventListener('submit', function(event) {
+        const form = document.getElementById('generate-form');
+        const submitBtn = document.getElementById('submit-btn');
+        const formError = document.getElementById('form-error');
+        const progressSection = document.getElementById('progress-section');
+        const progressMessage = document.getElementById('progress-message');
+        const progressBar = document.getElementById('progress-bar');
+        const downloadSection = document.getElementById('download-section');
+        const downloadLink = document.getElementById('download-link');
+
+        // How long we keep polling before giving up on a job that never
+        // reports back (network dropped, server restarted, etc). Individual
+        // fetch failures don't count against this - only sustained silence does.
+        const MAX_POLL_MINUTES = 10;
+        const POLL_INTERVAL_MS = 1500;
+        const MAX_CONSECUTIVE_FETCH_FAILURES = 5;
+
+        function setProgress(percent, message) {
+            const pct = Math.max(0, Math.min(100, Math.round(percent)));
+            progressBar.style.width = pct + '%';
+            progressBar.setAttribute('aria-valuenow', pct);
+            progressMessage.textContent = message;
+        }
+
+        function resetUI() {
+            formError.style.display = 'none';
+            downloadSection.style.display = 'none';
+            progressSection.style.display = 'block';
+            setProgress(0, 'Starting...');
+        }
+
+        function showError(message) {
+            progressSection.style.display = 'none';
+            formError.textContent = message;
+            formError.style.display = 'block';
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Generate Statements';
+        }
+
+        function pollProgress(tempId, downloadUrl) {
+            const startTime = Date.now();
+            let consecutiveFailures = 0;
+
+            const interval = setInterval(() => {
+                if (Date.now() - startTime > MAX_POLL_MINUTES * 60 * 1000) {
+                    clearInterval(interval);
+                    showError('This is taking much longer than expected. The job may still finish in the background - try refreshing in a few minutes, or start again.');
+                    return;
+                }
+
+                fetch(`/api/progress/${tempId}`)
+                    .then(response => {
+                        if (!response.ok && response.status !== 404) {
+                            throw new Error(`Status check failed: ${response.status}`);
+                        }
+                        return response.json();
+                    })
+                    .then(data => {
+                        consecutiveFailures = 0;
+
+                        if (data.state === 'processing') {
+                            setProgress(data.progress || 0, data.message || 'Processing...');
+                        } else if (data.state === 'completed') {
+                            clearInterval(interval);
+                            setProgress(100, data.message || 'Done!');
+                            progressSection.style.display = 'none';
+                            downloadLink.setAttribute('href', downloadUrl);
+                            downloadSection.style.display = 'block';
+                            submitBtn.disabled = false;
+                            submitBtn.textContent = 'Generate Statements';
+                        } else if (data.state === 'error' || data.state === 'unknown') {
+                            clearInterval(interval);
+                            showError(data.message || 'Something went wrong while generating your statements.');
+                        }
+                    })
+                    .catch(error => {
+                        consecutiveFailures++;
+                        console.error('Error checking status:', error);
+                        if (consecutiveFailures >= MAX_CONSECUTIVE_FETCH_FAILURES) {
+                            clearInterval(interval);
+                            showError('Lost connection while checking progress. Please refresh and try again.');
+                        }
+                    });
+            }, POLL_INTERVAL_MS);
+        }
+
+        form.addEventListener('submit', function (event) {
             event.preventDefault();
-    
-            // Hide previous sections and show the progress section
-            document.getElementById('download-section').style.display = 'none';
-            document.getElementById('progress-section').style.display = 'block';
-            document.getElementById('progress-message').textContent = 'Processing started...';
-            document.getElementById('progress-bar').style.width = '0%';
-            document.getElementById('progress-bar').setAttribute('aria-valuenow', '0');
-    
-            var formData = new FormData(this);
-    
+
+            resetUI();
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Starting...';
+
+            const formData = new FormData(this);
+
             fetch('/api/process_statement', {
                 method: 'POST',
                 body: formData,
             })
-            .then(response => {
-                if (!response.ok) {
-                    throw new Error(`Server returned ${response.status}: ${response.statusText}`);
-                }
-                return response.json();
-            })
-            .then(data => {
-                console.log('Response from /api/process_statement:', data);
-    
-                if (data.temp_id) {
-                    const tempId = data.temp_id;
-    
-                    // Start polling for progress
-                    const statusUrl = `/api/progress/${tempId}`;
-                    const downloadUrl = `/api/download_statement/${tempId}`;
-                    const pollInterval = 2000; // Poll every 2 seconds
-                    let retries = 0;
-                    const maxRetries = 20;
-    
-                    const pollStatus = setInterval(() => {
-                        if (retries >= maxRetries) {
-                            clearInterval(pollStatus);
-                            document.getElementById('progress-message').textContent = 'Processing timeout. Please try again.';
-                            alert('Processing took too long. Please try again.');
-                            return;
-                        }
-                        retries++;
-
-                        fetch(statusUrl)
-                            .then(response => {
-                                if (!response.ok) {
-                                    throw new Error(`Status check failed: ${response.statusText}`);
-                                }
-                                return response.json();
-                            })
-                            .then(statusData => {
-                                console.log('Status response:', statusData);
-
-                                if (statusData.status === 'Processing') {
-                                    document.getElementById('progress-message').textContent = 'Processing statements...';
-
-                                    if (statusData.progress) {
-                                        const progress = statusData.progress.replace('%', ''); // Extract numeric value
-                                        document.getElementById('progress-bar').style.width = statusData.progress;
-                                        document.getElementById('progress-bar').setAttribute('aria-valuenow', progress);
-                                    }
-                                } else if (statusData.status === 'Completed') {
-                                    clearInterval(pollStatus); // Stop polling once completed
-                                    document.getElementById('progress-message').textContent = 'Processing complete!';
-                                    document.getElementById('progress-bar').style.width = '100%';
-                                    document.getElementById('progress-bar').setAttribute('aria-valuenow', '100');
-                                    document.getElementById('download-link').setAttribute('href', downloadUrl);
-                                    document.getElementById('download-section').style.display = 'block';
-                                } else if (statusData.status === 'Error') {
-                                    clearInterval(pollStatus);
-                                    document.getElementById('progress-message').textContent = 'An error occurred during processing.';
-                                    alert('Error: ' + (statusData.message || 'Unknown error.'));
-                                }
-                            })
-                            .catch(error => {
-                                clearInterval(pollStatus);
-                                console.error('Error checking status:', error);
-                                document.getElementById('progress-message').textContent = 'Error checking processing status.';
-                                alert('There was an issue tracking the processing status. Please try again.');
-                            });
-                    }, pollInterval);
-                } else {
-                    alert('Error generating statements: ' + (data.message || 'Unknown error.'));
-                }
-            })
-            .catch(error => {
-                console.error('Error in /api/process_statement:', error);
-                alert('There was an issue processing your request. Please try again.');
-            });
+                .then(response => response.json().then(data => ({ ok: response.ok, data })))
+                .then(({ ok, data }) => {
+                    if (!ok || !data.temp_id) {
+                        showError(data.message || 'Could not start processing. Please check your files and try again.');
+                        return;
+                    }
+                    submitBtn.textContent = 'Generating...';
+                    setProgress(0, data.message || 'Processing started...');
+                    pollProgress(data.temp_id, data.download_link || `/api/download_statement/${data.temp_id}`);
+                })
+                .catch(error => {
+                    console.error('Error in /api/process_statement:', error);
+                    showError('There was an issue starting the request. Please try again.');
+                });
         });
-    </script>    
+    </script>
 </body>
 </html>
