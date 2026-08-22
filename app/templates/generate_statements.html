@@ -30,6 +30,13 @@
                 <h2>Statement Generator</h2>
             </div>
             <div class="card-body">
+                <div class="alert alert-light border mb-4 small">
+                    Your template needs <code>{{ '{{ field_name }}' }}</code> placeholders, and your spreadsheet's
+                    column headers must match them. You also need an ID column and a name column.
+                    <a href="/">See the full walkthrough</a> or
+                    <a href="/api/download_examples">download a working example</a>.
+                </div>
+
                 <form id="generate-form" action="/api/process_statement" method="POST" enctype="multipart/form-data">
                     <div class="mb-3">
                         <label for="api_key" class="form-label">API Key:</label>
@@ -40,11 +47,13 @@
                     <div class="mb-3">
                         <label for="template_file" class="form-label">Upload Template File:</label>
                         <input type="file" accept=".doc, .docx" class="form-control" id="template_file" name="template_file" required>
+                        <div class="form-text">A .docx with <code>{{ '{{ field_name }}' }}</code> placeholders, e.g. <code>{{ '{{ name }}' }}</code>.</div>
                     </div>
 
                     <div class="mb-3">
                         <label for="data_file" class="form-label">Upload Data File:</label>
                         <input type="file" accept=".xls, .xlsx" class="form-control" id="data_file" name="data_file" required>
+                        <div class="form-text">Headers must match your template's placeholders, plus an ID column and a name column.</div>
                     </div>
 
                     <div class="form-check mb-3">
@@ -52,6 +61,7 @@
                         <label class="form-check-label" for="password_protection">
                             Enable Password Protection
                         </label>
+                        <div class="form-text">Each PDF is locked with that row's own ID as the password.</div>
                     </div>
 
                     <div id="form-error" class="alert alert-danger" style="display:none;"></div>

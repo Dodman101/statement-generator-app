@@ -394,6 +394,21 @@ def statement_generator():
     return render_template('generate_statements.html')
 
 
+@generate_stats_bp.route('/download_examples', methods=['GET'])
+def download_examples():
+    """Public - lets a prospective user see exactly what a working
+    template/spreadsheet pair looks like before they need a key."""
+    examples_dir = os.path.join(current_app.root_path, 'static', 'examples')
+    zip_path = os.path.join(examples_dir, 'example_files.zip')
+
+    if not os.path.exists(zip_path):
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            zipf.write(os.path.join(examples_dir, 'example_template.docx'), 'example_template.docx')
+            zipf.write(os.path.join(examples_dir, 'example_data.xlsx'), 'example_data.xlsx')
+
+    return send_file(zip_path, mimetype='application/zip', as_attachment=True, download_name='example_files.zip')
+
+
 @generate_stats_bp.route('/process_statement', methods=['POST'])
 @require_api_key
 def process_statement():
