@@ -183,6 +183,22 @@
     padding:9px 22px;
   }
   #download-link:hover{background:var(--seal); color:#fff;}
+
+  #warnings-section{
+    margin-top:16px;
+    text-align:left;
+    font-size:12.5px;
+    color:#8a5a1f;
+    background:#faf3e6;
+    border:1px solid #e3c99a;
+    padding:10px 12px;
+  }
+  #warnings-section p{margin:0 0 6px; font-weight:600;}
+  #warnings-section ul{list-style:disc; margin:0; padding-left:18px;}
+  #warnings-section li{
+    font-size:12.5px; padding:0; margin-bottom:2px;
+    border-left:none; background:none; color:#8a5a1f;
+  }
 </style>
 </head>
 <body>
@@ -259,6 +275,7 @@
     <div id="download-section" style="display:none;">
       <p>Statements are ready for download.</p>
       <a id="download-link" href="#">Download zip</a>
+      <div id="warnings-section" style="display:none;"></div>
     </div>
   </div>
 </div>
@@ -273,6 +290,7 @@
     const progressBar = document.getElementById('progress-bar');
     const downloadSection = document.getElementById('download-section');
     const downloadLink = document.getElementById('download-link');
+    const warningsSection = document.getElementById('warnings-section');
 
     // Remember the key locally so returning users don't retype it. This
     // stays in the browser only - it's never sent anywhere but the
@@ -297,9 +315,17 @@
         progressMessage.textContent = message;
     }
 
+    function escapeHtml(str) {
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+    }
+
     function resetUI() {
         formError.style.display = 'none';
         downloadSection.style.display = 'none';
+        warningsSection.style.display = 'none';
+        warningsSection.innerHTML = '';
         progressSection.style.display = 'block';
         setProgress(0, 'Starting...');
     }
@@ -341,6 +367,11 @@
                         progressSection.style.display = 'none';
                         downloadSection.style.display = 'block';
                         downloadLink.onclick = (e) => { e.preventDefault(); downloadZip(downloadUrl, apiKey); };
+                        if (data.warnings && data.warnings.length) {
+                            const items = data.warnings.map(w => `<li>${escapeHtml(w)}</li>`).join('');
+                            warningsSection.innerHTML = `<p>Heads up</p><ul>${items}</ul>`;
+                            warningsSection.style.display = 'block';
+                        }
                         submitBtn.disabled = false;
                         submitBtn.textContent = 'Generate statements';
                     } else if (data.state === 'error' || data.state === 'unknown') {

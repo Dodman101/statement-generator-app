@@ -98,9 +98,15 @@ def schedule_cleanup():
 Thread(target=schedule_cleanup, daemon=True).start()
 
 
-def set_progress(temp_id, state, message, progress):
-    """state is one of: 'processing', 'completed', 'error'. progress is 0-100."""
-    PROGRESS_STATUS[temp_id] = {"state": state, "message": message, "progress": progress}
+def set_progress(temp_id, state, message, progress, warnings=None):
+    """state is one of: 'processing', 'completed', 'error'. progress is 0-100.
+    warnings, when present, is a list of short strings surfaced to the caller
+    alongside a 'completed' state - e.g. rows that were generated but couldn't
+    be password-protected."""
+    entry = {"state": state, "message": message, "progress": progress}
+    if warnings:
+        entry["warnings"] = warnings
+    PROGRESS_STATUS[temp_id] = entry
 
 
 class StatementGenerator:
@@ -122,6 +128,10 @@ class StatementGenerator:
         # from the same source of truth instead of re-deriving it from a
         # separately-ordered directory listing.
         self.rows_by_safe_id = {}
+        # Names of rows that were generated without an ID - and so, if password
+        # protection is requested, without a password. Populated during
+        # apply_password_protection() and surfaced to the caller as warnings.
+        self.unprotected_names = []
         self.libreoffice_path = self._get_libreoffice_path()
 
         self.id_column_index = self._find_column(self.ID_HEADER_NAMES)
@@ -205,20 +215,28 @@ class StatementGenerator:
 
             client_id = row[self.id_column_index]
             client_name = row[self.name_column_index]
-            if client_id is None or str(client_id).strip() == '':
-                raise ValueError(f"Row {index + 1} is missing a value in the ID column.")
             if client_name is None or str(client_name).strip() == '':
                 raise ValueError(f"Row {index + 1} is missing a value in the name column.")
 
-            safe_id = re.sub(r'[^a-zA-Z0-9_-]', '_', str(client_id).strip())
+            # A blank ID shouldn't fail the whole batch - it just means this
+            # one statement can't be named/protected by ID. Fall back to the
+            # row's name (plus row number, for uniqueness) as the file key.
+            id_missing = client_id is None or str(client_id).strip() == ''
+            if id_missing:
+                name_part = re.sub(r'[^a-zA-Z0-9_-]', '_', str(client_name).strip())[:30]
+                safe_id = f"row{index}_{name_part}"
+            else:
+                safe_id = re.sub(r'[^a-zA-Z0-9_-]', '_', str(client_id).strip())
+
             # Guard against two rows sharing the same ID, which would otherwise
             # silently overwrite one client's statement with another's.
             if safe_id in self.rows_by_safe_id:
                 safe_id = f"{safe_id}_{index}"
 
             self.rows_by_safe_id[safe_id] = {
-                "id": str(client_id).strip(),
+                "id": None if id_missing else str(client_id).strip(),
                 "name": str(client_name).strip(),
+                "id_missing": id_missing,
             }
 
             template = DocxTemplate(self.template_path)
@@ -313,6 +331,11 @@ class StatementGenerator:
                 logger.warning(f"No client record found for '{filename}'; skipping password protection for this file.")
                 continue
 
+            if row_info.get('id_missing'):
+                logger.warning(f"Skipping password protection for '{row_info['name']}' - no ID was provided for this row.")
+                self.unprotected_names.append(row_info['name'])
+                continue
+
             full_path = os.path.join(self.output_folder, filename)
             reader = PdfReader(full_path)
             writer = PdfWriter()
@@ -358,7 +381,14 @@ class StatementGenerator:
         if password_protection:
             self.apply_password_protection()
         self.rename_pdfs()
-        set_progress(self.temp_id, "completed", "Done - your statements are ready.", 100)
+
+        warnings = None
+        if password_protection and self.unprotected_names:
+            warnings = [
+                f"'{name}' was generated without password protection because no ID was provided for that row."
+                for name in self.unprotected_names
+            ]
+        set_progress(self.temp_id, "completed", "Done - your statements are ready.", 100, warnings=warnings)
 
 
 def run_generation_job(temp_id, template_path, data_path, output_folder, password_protection):
@@ -381,6 +411,21 @@ def run_generation_job(temp_id, template_path, data_path, output_folder, passwor
                     os.remove(path)
             except Exception as e:
                 logger.warning(f"Could not remove temporary upload {path}: {e}")
+
+
+def count_data_rows(data_path):
+    """Quick, read-only count of non-blank data rows (excludes the header row).
+    Used to enforce max_rows_per_job before a job is even started."""
+    workbook = openpyxl.load_workbook(data_path, read_only=True)
+    try:
+        sheet = workbook.active
+        count = 0
+        for row in sheet.iter_rows(min_row=2, values_only=True):
+            if row and any(value is not None for value in row):
+                count += 1
+        return count
+    finally:
+        workbook.close()
 
 
 def generate_temp_id():
@@ -427,6 +472,12 @@ def process_statement():
         return jsonify({"message": "Data file must be a .xls or .xlsx file."}), 400
 
     client = g.api_client
+
+    if password_protection and not client['password_protection_allowed']:
+        return jsonify({
+            "message": "Password protection isn't available on your current plan. Contact us to upgrade."
+        }), 403
+
     if client['monthly_job_limit'] is not None:
         try:
             used = count_jobs_this_month(client['id'])
@@ -453,8 +504,25 @@ def process_statement():
     template_file.save(template_path)
     data_file.save(data_path)
 
+    if client['max_rows_per_job'] is not None:
+        try:
+            row_count = count_data_rows(data_path)
+        except Exception as e:
+            shutil.rmtree(output_folder, ignore_errors=True)
+            logger.warning(f"Could not read data file for row-count check: {e}")
+            return jsonify({"message": "Could not read the data file. Please check it's a valid .xls or .xlsx file."}), 400
+
+        if row_count > client['max_rows_per_job']:
+            shutil.rmtree(output_folder, ignore_errors=True)
+            return jsonify({
+                "message": f"Your plan allows up to {client['max_rows_per_job']} rows per job "
+                           f"(this file has {row_count}). Contact us to upgrade."
+            }), 400
+    else:
+        row_count = None
+
     try:
-        create_job(temp_id, client['id'])
+        create_job(temp_id, client['id'], row_count=row_count)
     except Exception as e:
         logger.error(f"Database error while recording job {temp_id}: {e}")
         return jsonify({"message": "Service temporarily unavailable. Please try again shortly."}), 503

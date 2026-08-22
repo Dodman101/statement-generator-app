@@ -58,10 +58,16 @@ def init_schema():
                     key_hash TEXT UNIQUE NOT NULL,
                     plan TEXT NOT NULL DEFAULT 'free',
                     monthly_job_limit INTEGER,     -- NULL = unlimited
+                    max_rows_per_job INTEGER,       -- NULL = unlimited
+                    password_protection_allowed BOOLEAN NOT NULL DEFAULT FALSE,
                     is_active BOOLEAN NOT NULL DEFAULT TRUE,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
                 );
             """)
+            # ADD COLUMN IF NOT EXISTS covers clients created before these
+            # columns existed - safe to run every time.
+            cur.execute("ALTER TABLE statement_api_clients ADD COLUMN IF NOT EXISTS max_rows_per_job INTEGER;")
+            cur.execute("ALTER TABLE statement_api_clients ADD COLUMN IF NOT EXISTS password_protection_allowed BOOLEAN NOT NULL DEFAULT FALSE;")
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS statement_jobs (
                     temp_id UUID PRIMARY KEY,
@@ -81,12 +87,13 @@ def hash_key(raw_key):
 
 
 def get_client_by_key(raw_key):
-    """Returns a dict {id, label, plan, monthly_job_limit} or None."""
+    """Returns a dict {id, label, plan, monthly_job_limit, max_rows_per_job,
+    password_protection_allowed} or None."""
     with get_connection() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
-                "SELECT id, label, plan, monthly_job_limit FROM statement_api_clients "
-                "WHERE key_hash = %s AND is_active = TRUE",
+                "SELECT id, label, plan, monthly_job_limit, max_rows_per_job, password_protection_allowed "
+                "FROM statement_api_clients WHERE key_hash = %s AND is_active = TRUE",
                 (hash_key(raw_key),)
             )
             return cur.fetchone()
@@ -103,12 +110,12 @@ def count_jobs_this_month(client_id):
             return cur.fetchone()[0]
 
 
-def create_job(temp_id, client_id):
+def create_job(temp_id, client_id, row_count=None):
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO statement_jobs (temp_id, client_id, status) VALUES (%s, %s, 'processing')",
-                (temp_id, client_id)
+                "INSERT INTO statement_jobs (temp_id, client_id, status, row_count) VALUES (%s, %s, 'processing', %s)",
+                (temp_id, client_id, row_count)
             )
 
 
@@ -124,7 +131,8 @@ def update_job_status(temp_id, status):
                 cur.execute("UPDATE statement_jobs SET status = %s WHERE temp_id = %s", (status, temp_id))
 
 
-def create_api_client(label, plan='free', monthly_job_limit=None):
+def create_api_client(label, plan='free', monthly_job_limit=None, max_rows_per_job=None,
+                       password_protection_allowed=False):
     """Creates a new client and returns the RAW api key.
 
     The raw key is only ever returned here, at creation time - only its hash
@@ -134,8 +142,9 @@ def create_api_client(label, plan='free', monthly_job_limit=None):
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO statement_api_clients (label, key_hash, plan, monthly_job_limit) "
-                "VALUES (%s, %s, %s, %s)",
-                (label, hash_key(raw_key), plan, monthly_job_limit)
+                "INSERT INTO statement_api_clients "
+                "(label, key_hash, plan, monthly_job_limit, max_rows_per_job, password_protection_allowed) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
+                (label, hash_key(raw_key), plan, monthly_job_limit, max_rows_per_job, password_protection_allowed)
             )
     return raw_key
