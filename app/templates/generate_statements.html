@@ -1,253 +1,427 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Statement Generator</title>
-    <link type="image/png" sizes="16x16" rel="icon" href="{{ url_for('static', filename='img/icons8-website-clouds-16.png') }}">
-    <!-- Bootstrap CSS -->
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <style>
-        .success { color: green; }
-        .error { color: red; }
-        #progress-bar { transition: width 0.4s ease; }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Statement Generator</title>
+<link type="image/png" sizes="16x16" rel="icon" href="{{ url_for('static', filename='img/icons8-website-clouds-16.png') }}">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,500;0,600;1,500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/statement-generator-theme.css') }}">
+<style>
+  /* Page-specific: letterhead + form + progress + download.
+     Shared tokens, fonts, .btn, .sheet, .note, .perforation, .hint
+     all live in statement-generator-theme.css */
+
+  .letterhead{
+    display:flex;
+    align-items:flex-start;
+    justify-content:space-between;
+    gap:16px;
+    padding:28px 32px 22px;
+    border-bottom:2px solid var(--ink);
+  }
+  .letterhead h1{
+    font-size:26px;
+    letter-spacing:-0.01em;
+    margin:0 0 4px;
+  }
+  .letterhead p{
+    margin:0;
+    font-size:12.5px;
+    color:var(--ink-soft);
+    max-width:34ch;
+  }
+  .letterhead code{background:none;}
+
+  .stamp{
+    flex:0 0 auto;
+    width:56px;height:56px;
+    border-radius:50%;
+    border:1.5px solid var(--seal);
+    color:var(--seal);
+    display:flex;align-items:center;justify-content:center;
+    font-family:"Fraunces", serif;
+    font-style:italic;
+    font-size:11px;
+    letter-spacing:0.02em;
+    text-align:center;
+    line-height:1.15;
+    transform:rotate(-8deg);
+    opacity:0.85;
+  }
+
+  .sheet{max-width:560px; margin:48px auto 0;}
+  body{padding:0 20px 80px;}
+  .body{padding:26px 32px 30px;}
+
+  ul{list-style:none;margin:0 0 18px;padding:0;}
+  ul li{
+    font-size:13px; padding:8px 12px; margin-bottom:6px;
+    border-left:3px solid var(--ink-soft);
+    background:#f2f0e6;
+  }
+  ul li.success{border-color:var(--good); color:var(--good);}
+  ul li.error{border-color:var(--bad); color:var(--bad);}
+
+  .note{margin-bottom:24px;}
+
+  .field{margin-bottom:20px;}
+  .field label{
+    display:block;
+    font-family:ui-monospace,SFMono-Regular,Consolas,monospace;
+    font-size:11px;
+    text-transform:uppercase;
+    letter-spacing:0.08em;
+    color:var(--ink-soft);
+    margin-bottom:6px;
+  }
+  .field input[type=text],
+  .field input[type=password],
+  .field input[type=file]{
+    width:100%;
+    font-size:14px;
+    font-family:ui-monospace,SFMono-Regular,Consolas,monospace;
+    padding:10px 12px;
+    background:#fff;
+    border:1px solid #b9b5a3;
+    border-radius:var(--radius);
+    color:var(--ink);
+  }
+  .field input:focus-visible{
+    outline:2px solid var(--seal);
+    outline-offset:1px;
+    border-color:var(--seal);
+  }
+
+  .toggle-row{
+    display:flex;
+    align-items:center;
+    gap:12px;
+    padding:12px 14px;
+    background:#f2f0e6;
+    border:1px solid var(--paper-line);
+    margin-bottom:24px;
+  }
+  .toggle-row input[type=checkbox]{
+    appearance:none;
+    width:20px;height:20px;
+    border-radius:50%;
+    border:1.5px solid var(--seal);
+    display:grid;place-items:center;
+    cursor:pointer;
+    flex:0 0 auto;
+  }
+  .toggle-row input[type=checkbox]::before{
+    content:"";
+    width:10px;height:10px;
+    border-radius:50%;
+    background:var(--seal);
+    transform:scale(0);
+    transition:transform .12s ease;
+  }
+  .toggle-row input[type=checkbox]:checked::before{transform:scale(1);}
+  .toggle-row label{font-size:13px; cursor:pointer;}
+
+  .perforation{margin:0 0 22px;}
+
+  #form-error{
+    display:none;
+    font-size:13px;
+    color:var(--bad);
+    background:#f6e9e6;
+    border:1px solid #e3bdb4;
+    padding:10px 12px;
+    margin-bottom:18px;
+  }
+
+  button#submit-btn{
+    width:100%;
+    padding:14px;
+    font-size:16px;
+    letter-spacing:0.01em;
+    color:#faf9f4;
+    background:var(--ink);
+    border:1px solid var(--ink);
+    transition:background .15s ease, transform .05s ease;
+  }
+  button#submit-btn:hover:not(:disabled){background:#232f52;}
+  button#submit-btn:active:not(:disabled){transform:translateY(1px);}
+  button#submit-btn:disabled{background:#8a8f7d; border-color:#8a8f7d; cursor:progress;}
+
+  #progress-section{margin-top:24px;}
+  #progress-message{
+    font-family:ui-monospace,SFMono-Regular,Consolas,monospace;
+    font-size:12px;
+    color:var(--ink-soft);
+    margin:0 0 8px;
+  }
+  .progress{
+    height:10px;
+    background:repeating-linear-gradient(90deg, #e2ded0 0 6px, #d7d3c4 6px 8px);
+    border:1px solid #b9b5a3;
+    overflow:hidden;
+  }
+  #progress-bar{
+    height:100%;
+    width:0%;
+    background:var(--seal);
+    transition:width .4s ease;
+  }
+
+  #download-section{margin-top:24px; text-align:center;}
+  #download-section p{margin:0 0 10px; font-size:13px; color:var(--good);}
+  #download-link{
+    display:inline-flex;
+    align-items:center;
+    gap:8px;
+    font-size:15px;
+    color:var(--ink);
+    text-decoration:none;
+    border:1.5px solid var(--seal);
+    border-radius:50px;
+    padding:9px 22px;
+  }
+  #download-link:hover{background:var(--seal); color:#fff;}
+</style>
 </head>
 <body>
-    <!-- Flash Messages Display -->
-    {% with messages = get_flashed_messages(with_categories=true) %}
-    {% if messages %}
-        <ul>
-            {% for category, message in messages %}
-                <li class="{{ category }}">{{ message }}</li>
-            {% endfor %}
-        </ul>
-    {% endif %}
-    {% endwith %}
-    <div class="container mt-5">
-        <div class="card shadow">
-            <div class="card-header bg-primary text-white text-center">
-                <h2>Statement Generator</h2>
-            </div>
-            <div class="card-body">
-                <div class="alert alert-light border mb-4 small">
-                    Your template needs <code>{{ '{{ field_name }}' }}</code> placeholders, and your spreadsheet's
-                    column headers must match them. You also need an ID column and a name column.
-                    <a href="/">See the full walkthrough</a> or
-                    <a href="/api/download_examples">download a working example</a>.
-                </div>
 
-                <form id="generate-form" action="/api/process_statement" method="POST" enctype="multipart/form-data">
-                    <div class="mb-3">
-                        <label for="api_key" class="form-label">API Key:</label>
-                        <input type="password" class="form-control" id="api_key" name="api_key" placeholder="sg_live_..." required>
-                        <div class="form-text">Don't have a key? Contact us to get one.</div>
-                    </div>
+{% with messages = get_flashed_messages(with_categories=true) %}
+{% if messages %}
+  <div class="sheet" style="margin:48px auto 0;border:none;box-shadow:none;background:none;padding:0;">
+    <ul>
+      {% for category, message in messages %}
+        <li class="{{ category }}">{{ message }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+{% endif %}
+{% endwith %}
 
-                    <div class="mb-3">
-                        <label for="template_file" class="form-label">Upload Template File:</label>
-                        <input type="file" accept=".doc, .docx" class="form-control" id="template_file" name="template_file" required>
-                        <div class="form-text">A .docx with <code>{{ '{{ field_name }}' }}</code> placeholders, e.g. <code>{{ '{{ name }}' }}</code>.</div>
-                    </div>
-
-                    <div class="mb-3">
-                        <label for="data_file" class="form-label">Upload Data File:</label>
-                        <input type="file" accept=".xls, .xlsx" class="form-control" id="data_file" name="data_file" required>
-                        <div class="form-text">Headers must match your template's placeholders, plus an ID column and a name column.</div>
-                    </div>
-
-                    <div class="form-check mb-3">
-                        <input type="checkbox" class="form-check-input" id="password_protection" name="password_protection">
-                        <label class="form-check-label" for="password_protection">
-                            Enable Password Protection
-                        </label>
-                        <div class="form-text">Each PDF is locked with that row's own ID as the password.</div>
-                    </div>
-
-                    <div id="form-error" class="alert alert-danger" style="display:none;"></div>
-
-                    <div class="d-grid">
-                        <button type="submit" id="submit-btn" class="btn btn-success">Generate Statements</button>
-                    </div>
-                </form>
-
-                <!-- Display progress status -->
-                <div id="progress-section" class="mt-4" style="display:none;">
-                    <p id="progress-message" class="text-info"></p>
-                    <div class="progress">
-                        <div id="progress-bar" class="progress-bar" role="progressbar" style="width: 0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
-                    </div>
-                </div>
-
-                <!-- Display the download link after processing -->
-                <div id="download-section" class="mt-4" style="display:none;">
-                    <p class="success">Statements are ready for download! <a id="download-link" href="#">Download Now</a></p>
-                </div>
-            </div>
-        </div>
+<div class="sheet">
+  <div class="letterhead">
+    <div>
+      <h1>Statement Generator</h1>
+      <p>Merge a template with a spreadsheet, get back one PDF per row.</p>
     </div>
-    <!-- Bootstrap JS (Optional) -->
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <div class="stamp">MERGE<br>&amp;<br>SEAL</div>
+  </div>
 
-    <script>
-        const form = document.getElementById('generate-form');
-        const apiKeyInput = document.getElementById('api_key');
-        const submitBtn = document.getElementById('submit-btn');
-        const formError = document.getElementById('form-error');
-        const progressSection = document.getElementById('progress-section');
-        const progressMessage = document.getElementById('progress-message');
-        const progressBar = document.getElementById('progress-bar');
-        const downloadSection = document.getElementById('download-section');
-        const downloadLink = document.getElementById('download-link');
+  <div class="body">
+    <div class="note">
+      Your template needs <code>{{ '{{ field_name }}' }}</code> placeholders, and your spreadsheet's
+      column headers must match them. You also need an ID column and a name column.
+      <a href="/">See the full walkthrough</a> or
+      <a href="/api/download_examples">download a working example</a>.
+    </div>
 
-        // Remember the key locally so returning users don't retype it. This
-        // stays in the browser only - it's never sent anywhere but the
-        // X-API-Key header on requests to this same app.
-        const STORAGE_KEY = 'statement_generator_api_key';
-        const savedKey = window.localStorage.getItem(STORAGE_KEY);
-        if (savedKey) {
-            apiKeyInput.value = savedKey;
-        }
+    <form id="generate-form" action="/api/process_statement" method="POST" enctype="multipart/form-data">
 
-        // How long we keep polling before giving up on a job that never
-        // reports back (network dropped, server restarted, etc). Individual
-        // fetch failures don't count against this - only sustained silence does.
-        const MAX_POLL_MINUTES = 10;
-        const POLL_INTERVAL_MS = 1500;
-        const MAX_CONSECUTIVE_FETCH_FAILURES = 5;
+      <div class="field">
+        <label for="api_key">API key</label>
+        <input type="password" id="api_key" name="api_key" placeholder="sg_live_..." required>
+        <div class="hint">Don't have a key? Contact us to get one.</div>
+      </div>
 
-        function setProgress(percent, message) {
-            const pct = Math.max(0, Math.min(100, Math.round(percent)));
-            progressBar.style.width = pct + '%';
-            progressBar.setAttribute('aria-valuenow', pct);
-            progressMessage.textContent = message;
-        }
+      <hr class="perforation">
 
-        function resetUI() {
-            formError.style.display = 'none';
-            downloadSection.style.display = 'none';
-            progressSection.style.display = 'block';
-            setProgress(0, 'Starting...');
-        }
+      <div class="field">
+        <label for="template_file">Template file</label>
+        <input type="file" accept=".doc, .docx" id="template_file" name="template_file" required>
+        <div class="hint">A .docx with <code>{{ '{{ field_name }}' }}</code> placeholders, e.g. <code>{{ '{{ name }}' }}</code>.</div>
+      </div>
 
-        function showError(message) {
-            progressSection.style.display = 'none';
-            formError.textContent = message;
-            formError.style.display = 'block';
-            submitBtn.disabled = false;
-            submitBtn.textContent = 'Generate Statements';
-        }
+      <div class="field">
+        <label for="data_file">Data file</label>
+        <input type="file" accept=".xls, .xlsx" id="data_file" name="data_file" required>
+        <div class="hint">Headers must match your template's placeholders, plus an ID column and a name column.</div>
+      </div>
 
-        function pollProgress(tempId, downloadUrl, apiKey) {
-            const startTime = Date.now();
-            let consecutiveFailures = 0;
+      <div class="toggle-row">
+        <input type="checkbox" id="password_protection" name="password_protection">
+        <label for="password_protection">Enable password protection</label>
+      </div>
+      <div class="hint" style="margin:-14px 0 20px 32px;">Each PDF is locked with that row's own ID as the password.</div>
 
-            const interval = setInterval(() => {
-                if (Date.now() - startTime > MAX_POLL_MINUTES * 60 * 1000) {
-                    clearInterval(interval);
-                    showError('This is taking much longer than expected. The job may still finish in the background - try refreshing in a few minutes, or start again.');
-                    return;
-                }
+      <div id="form-error"></div>
 
-                fetch(`/api/progress/${tempId}`, { headers: { 'X-API-Key': apiKey } })
-                    .then(response => {
-                        if (!response.ok && response.status !== 404) {
-                            throw new Error(`Status check failed: ${response.status}`);
-                        }
-                        return response.json();
-                    })
-                    .then(data => {
-                        consecutiveFailures = 0;
+      <button type="submit" id="submit-btn">Generate statements</button>
+    </form>
 
-                        if (data.state === 'processing') {
-                            setProgress(data.progress || 0, data.message || 'Processing...');
-                        } else if (data.state === 'completed') {
-                            clearInterval(interval);
-                            setProgress(100, data.message || 'Done!');
-                            progressSection.style.display = 'none';
-                            downloadSection.style.display = 'block';
-                            downloadLink.onclick = (e) => { e.preventDefault(); downloadZip(downloadUrl, apiKey); };
-                            submitBtn.disabled = false;
-                            submitBtn.textContent = 'Generate Statements';
-                        } else if (data.state === 'error' || data.state === 'unknown') {
-                            clearInterval(interval);
-                            showError(data.message || 'Something went wrong while generating your statements.');
-                        }
-                    })
-                    .catch(error => {
-                        consecutiveFailures++;
-                        console.error('Error checking status:', error);
-                        if (consecutiveFailures >= MAX_CONSECUTIVE_FETCH_FAILURES) {
-                            clearInterval(interval);
-                            showError('Lost connection while checking progress. Please refresh and try again.');
-                        }
-                    });
-            }, POLL_INTERVAL_MS);
-        }
+    <div id="progress-section" style="display:none;">
+      <p id="progress-message"></p>
+      <div class="progress">
+        <div id="progress-bar" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+      </div>
+    </div>
 
-        // A plain <a href> can't carry the X-API-Key header, so the download
-        // is fetched here and handed to the browser as a blob instead.
-        function downloadZip(downloadUrl, apiKey) {
-            fetch(downloadUrl, { headers: { 'X-API-Key': apiKey } })
-                .then(response => {
-                    if (!response.ok) {
-                        throw new Error(`Download failed: ${response.status}`);
-                    }
-                    return response.blob();
-                })
-                .then(blob => {
-                    const objectUrl = window.URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = objectUrl;
-                    a.download = 'statements.zip';
-                    document.body.appendChild(a);
-                    a.click();
-                    a.remove();
-                    window.URL.revokeObjectURL(objectUrl);
-                })
-                .catch(error => {
-                    console.error('Error downloading zip:', error);
-                    showError('Could not download the file. Please try again.');
-                });
-        }
+    <div id="download-section" style="display:none;">
+      <p>Statements are ready for download.</p>
+      <a id="download-link" href="#">Download zip</a>
+    </div>
+  </div>
+</div>
 
-        form.addEventListener('submit', function (event) {
-            event.preventDefault();
+<script>
+    const form = document.getElementById('generate-form');
+    const apiKeyInput = document.getElementById('api_key');
+    const submitBtn = document.getElementById('submit-btn');
+    const formError = document.getElementById('form-error');
+    const progressSection = document.getElementById('progress-section');
+    const progressMessage = document.getElementById('progress-message');
+    const progressBar = document.getElementById('progress-bar');
+    const downloadSection = document.getElementById('download-section');
+    const downloadLink = document.getElementById('download-link');
 
-            const apiKey = apiKeyInput.value.trim();
-            if (!apiKey) {
-                showError('Please enter your API key.');
+    // Remember the key locally so returning users don't retype it. This
+    // stays in the browser only - it's never sent anywhere but the
+    // X-API-Key header on requests to this same app.
+    const STORAGE_KEY = 'statement_generator_api_key';
+    const savedKey = window.localStorage.getItem(STORAGE_KEY);
+    if (savedKey) {
+        apiKeyInput.value = savedKey;
+    }
+
+    // How long we keep polling before giving up on a job that never
+    // reports back (network dropped, server restarted, etc). Individual
+    // fetch failures don't count against this - only sustained silence does.
+    const MAX_POLL_MINUTES = 10;
+    const POLL_INTERVAL_MS = 1500;
+    const MAX_CONSECUTIVE_FETCH_FAILURES = 5;
+
+    function setProgress(percent, message) {
+        const pct = Math.max(0, Math.min(100, Math.round(percent)));
+        progressBar.style.width = pct + '%';
+        progressBar.setAttribute('aria-valuenow', pct);
+        progressMessage.textContent = message;
+    }
+
+    function resetUI() {
+        formError.style.display = 'none';
+        downloadSection.style.display = 'none';
+        progressSection.style.display = 'block';
+        setProgress(0, 'Starting...');
+    }
+
+    function showError(message) {
+        progressSection.style.display = 'none';
+        formError.textContent = message;
+        formError.style.display = 'block';
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Generate statements';
+    }
+
+    function pollProgress(tempId, downloadUrl, apiKey) {
+        const startTime = Date.now();
+        let consecutiveFailures = 0;
+
+        const interval = setInterval(() => {
+            if (Date.now() - startTime > MAX_POLL_MINUTES * 60 * 1000) {
+                clearInterval(interval);
+                showError('This is taking much longer than expected. The job may still finish in the background - try refreshing in a few minutes, or start again.');
                 return;
             }
-            window.localStorage.setItem(STORAGE_KEY, apiKey);
 
-            resetUI();
-            submitBtn.disabled = true;
-            submitBtn.textContent = 'Starting...';
-
-            const formData = new FormData(this);
-            formData.delete('api_key');  // sent as a header, not part of the body
-
-            fetch('/api/process_statement', {
-                method: 'POST',
-                headers: { 'X-API-Key': apiKey },
-                body: formData,
-            })
-                .then(response => response.json().then(data => ({ ok: response.ok, data })))
-                .then(({ ok, data }) => {
-                    if (!ok || !data.temp_id) {
-                        showError(data.message || 'Could not start processing. Please check your files and try again.');
-                        return;
+            fetch(`/api/progress/${tempId}`, { headers: { 'X-API-Key': apiKey } })
+                .then(response => {
+                    if (!response.ok && response.status !== 404) {
+                        throw new Error(`Status check failed: ${response.status}`);
                     }
-                    submitBtn.textContent = 'Generating...';
-                    setProgress(0, data.message || 'Processing started...');
-                    pollProgress(data.temp_id, data.download_link || `/api/download_statement/${data.temp_id}`, apiKey);
+                    return response.json();
+                })
+                .then(data => {
+                    consecutiveFailures = 0;
+
+                    if (data.state === 'processing') {
+                        setProgress(data.progress || 0, data.message || 'Processing...');
+                    } else if (data.state === 'completed') {
+                        clearInterval(interval);
+                        setProgress(100, data.message || 'Done!');
+                        progressSection.style.display = 'none';
+                        downloadSection.style.display = 'block';
+                        downloadLink.onclick = (e) => { e.preventDefault(); downloadZip(downloadUrl, apiKey); };
+                        submitBtn.disabled = false;
+                        submitBtn.textContent = 'Generate statements';
+                    } else if (data.state === 'error' || data.state === 'unknown') {
+                        clearInterval(interval);
+                        showError(data.message || 'Something went wrong while generating your statements.');
+                    }
                 })
                 .catch(error => {
-                    console.error('Error in /api/process_statement:', error);
-                    showError('There was an issue starting the request. Please try again.');
+                    consecutiveFailures++;
+                    console.error('Error checking status:', error);
+                    if (consecutiveFailures >= MAX_CONSECUTIVE_FETCH_FAILURES) {
+                        clearInterval(interval);
+                        showError('Lost connection while checking progress. Please refresh and try again.');
+                    }
                 });
-        });
-    </script>
+        }, POLL_INTERVAL_MS);
+    }
+
+    // A plain <a href> can't carry the X-API-Key header, so the download
+    // is fetched here and handed to the browser as a blob instead.
+    function downloadZip(downloadUrl, apiKey) {
+        fetch(downloadUrl, { headers: { 'X-API-Key': apiKey } })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`Download failed: ${response.status}`);
+                }
+                return response.blob();
+            })
+            .then(blob => {
+                const objectUrl = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = objectUrl;
+                a.download = 'statements.zip';
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                window.URL.revokeObjectURL(objectUrl);
+            })
+            .catch(error => {
+                console.error('Error downloading zip:', error);
+                showError('Could not download the file. Please try again.');
+            });
+    }
+
+    form.addEventListener('submit', function (event) {
+        event.preventDefault();
+
+        const apiKey = apiKeyInput.value.trim();
+        if (!apiKey) {
+            showError('Please enter your API key.');
+            return;
+        }
+        window.localStorage.setItem(STORAGE_KEY, apiKey);
+
+        resetUI();
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Starting...';
+
+        const formData = new FormData(this);
+        formData.delete('api_key');  // sent as a header, not part of the body
+
+        fetch('/api/process_statement', {
+            method: 'POST',
+            headers: { 'X-API-Key': apiKey },
+            body: formData,
+        })
+            .then(response => response.json().then(data => ({ ok: response.ok, data })))
+            .then(({ ok, data }) => {
+                if (!ok || !data.temp_id) {
+                    showError(data.message || 'Could not start processing. Please check your files and try again.');
+                    return;
+                }
+                submitBtn.textContent = 'Generating...';
+                setProgress(0, data.message || 'Processing started...');
+                pollProgress(data.temp_id, data.download_link || `/api/download_statement/${data.temp_id}`, apiKey);
+            })
+            .catch(error => {
+                console.error('Error in /api/process_statement:', error);
+                showError('There was an issue starting the request. Please try again.');
+            });
+    });
+</script>
 </body>
 </html>

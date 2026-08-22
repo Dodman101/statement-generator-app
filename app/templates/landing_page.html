@@ -1,155 +1,218 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Statement Generator</title>
-    <link type="image/png" sizes="16x16" rel="icon" href="{{ url_for('static', filename='img/icons8-website-clouds-16.png') }}">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-        }
-        .hero-section {
-            background-color: #f8f9fa;
-            padding: 50px 0;
-        }
-        .how-it-works-section {
-            padding: 50px 0;
-        }
-        .step-number {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            width: 36px;
-            height: 36px;
-            border-radius: 50%;
-            background-color: #0d6efd;
-            color: white;
-            font-weight: bold;
-            flex-shrink: 0;
-        }
-        code {
-            background-color: #f1f3f5;
-            padding: 2px 6px;
-            border-radius: 4px;
-        }
-        .features-section {
-            background-color: #ffffff;
-            padding: 50px 0;
-        }
-        .image-placeholder {
-            max-height: 300px;
-            object-fit: cover;
-        }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Statement Generator</title>
+<link type="image/png" sizes="16x16" rel="icon" href="{{ url_for('static', filename='img/icons8-website-clouds-16.png') }}">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,500;0,600;1,500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/statement-generator-theme.css') }}">
+<style>
+  /* Page-specific: hero + how-it-works + features.
+     Shared tokens, fonts, .btn, .note, .perforation, .hint, footer
+     all live in statement-generator-theme.css */
+
+  .hero{
+    background:#faf9f4;
+    border-bottom:2px solid var(--ink);
+    padding:56px 0 44px;
+    text-align:center;
+  }
+  .eyebrow{
+    font-family:ui-monospace,SFMono-Regular,Consolas,monospace;
+    font-size:11px;
+    letter-spacing:0.14em;
+    text-transform:uppercase;
+    color:var(--seal-dark);
+    margin:0 0 14px;
+  }
+  .hero h1{
+    font-size:44px;
+    letter-spacing:-0.01em;
+    margin:0 0 18px;
+  }
+  .hero p.lead{
+    max-width:56ch;
+    margin:0 auto 32px;
+    color:var(--ink-soft);
+    font-size:16px;
+  }
+  .hero-image{
+    max-width:800px;
+    width:100%;
+    border:1px solid var(--paper-line);
+    display:block;
+    margin:0 auto 32px;
+    box-shadow:0 18px 40px -24px rgba(22,33,62,0.35);
+  }
+  .hero .btn-row{display:flex; gap:12px; justify-content:center; flex-wrap:wrap; margin-bottom:18px;}
+  .hero .fine{font-size:12.5px; color:var(--ink-soft);}
+
+  .how{padding:56px 0 48px;}
+  .how h2{
+    font-size:26px;
+    text-align:center;
+    margin:0 0 40px;
+  }
+  .step{
+    display:flex;
+    gap:20px;
+    padding:22px 0;
+    border-top:1px dashed #b9b5a3;
+  }
+  .step:first-of-type{border-top:none;}
+  .step-mark{
+    flex:0 0 auto;
+    width:34px; height:34px;
+    border-radius:50%;
+    font-size:13px;
+    font-weight:600;
+  }
+  .step h3{
+    font-size:17px;
+    margin:2px 0 8px;
+  }
+  .step p{margin:0 0 8px; color:var(--ink-soft);}
+  .step ul{margin:8px 0; padding-left:20px; color:var(--ink-soft);}
+  .step li{margin-bottom:4px;}
+  .how .example-cta{text-align:center; margin-top:36px;}
+
+  .features{
+    background:#faf9f4;
+    border-top:1px solid var(--paper-line);
+    border-bottom:1px solid var(--paper-line);
+    padding:48px 0;
+  }
+  .feature-grid{
+    display:grid;
+    grid-template-columns:repeat(3, 1fr);
+    gap:28px;
+    text-align:center;
+  }
+  .feature-grid img{
+    width:100%;
+    max-height:110px;
+    object-fit:cover;
+    border:1px solid var(--paper-line);
+    margin-bottom:14px;
+  }
+  .feature-grid h4{
+    font-size:16px;
+    margin:0 0 6px;
+  }
+  .feature-grid p{font-size:13.5px; color:var(--ink-soft); margin:0;}
+  @media (max-width:640px){
+    .feature-grid{grid-template-columns:1fr;}
+    .hero h1{font-size:34px;}
+  }
+</style>
 </head>
 <body>
-    <!-- Hero Section -->
-    <div class="container text-center hero-section">
-        <h1 class="display-4">Statement Generator</h1>
-        <p class="lead">Turn a Word template and an Excel spreadsheet into individually personalized, optionally password-protected PDF statements - for every row in your spreadsheet, in one go.</p>
-        <div class="mt-4">
-            <img src="{{ url_for('static', filename='img/PDF-Generation-01.png') }}" width="800" height="500" alt="Statement generation preview" class="img-fluid image-placeholder">
-        </div>
-        <div class="mt-4">
-            <a href="/api/statement_generator" class="btn btn-primary btn-lg me-2">Start Generating Statements</a>
-            <a href="/api/download_examples" class="btn btn-outline-secondary btn-lg">Download Example Files</a>
-        </div>
-        <p class="text-muted mt-3">You'll need an API key to generate statements. Don't have one? Contact us to get set up.</p>
+
+<div class="hero">
+  <div class="wrap">
+    <p class="eyebrow">Merge &amp; seal</p>
+    <h1>Statement Generator</h1>
+    <p class="lead">Turn a Word template and an Excel spreadsheet into individually personalized, optionally password-protected PDF statements — for every row in your spreadsheet, in one go.</p>
+    <img src="{{ url_for('static', filename='img/PDF-Generation-01.png') }}" width="800" height="500" alt="Statement generation preview" class="hero-image">
+    <div class="btn-row">
+      <a href="/api/statement_generator" class="btn btn-primary">Start generating statements</a>
+      <a href="/api/download_examples" class="btn btn-outline">Download example files</a>
+    </div>
+    <p class="fine">You'll need an API key to generate statements. Don't have one? Contact us to get set up.</p>
+  </div>
+</div>
+
+<div class="how">
+  <div class="wrap">
+    <h2>How it works</h2>
+
+    <div class="step">
+      <div class="step-mark seal-mark">01</div>
+      <div>
+        <h3>Prepare your Word template</h3>
+        <p>
+          Write your statement as a normal Word document, and mark the parts that change per person with
+          double curly braces, e.g. <code>{{ '{{ name }}' }}</code> or <code>{{ '{{ balance }}' }}</code>.
+          Every placeholder in the template must have a matching column in your spreadsheet.
+        </p>
+      </div>
     </div>
 
-    <!-- How It Works Section -->
-    <div class="container how-it-works-section">
-        <h2 class="text-center mb-5">How It Works</h2>
-
-        <div class="row mb-4">
-            <div class="col-1 text-center"><span class="step-number">1</span></div>
-            <div class="col-11">
-                <h5>Prepare your Word template</h5>
-                <p>
-                    Write your statement as a normal Word document, and mark the parts that change per person with
-                    double curly braces, e.g. <code>{{ '{{ name }}' }}</code> or <code>{{ '{{ balance }}' }}</code>.
-                    Every placeholder in the template must have a matching column in your spreadsheet.
-                </p>
-            </div>
-        </div>
-
-        <div class="row mb-4">
-            <div class="col-1 text-center"><span class="step-number">2</span></div>
-            <div class="col-11">
-                <h5>Prepare your Excel spreadsheet</h5>
-                <p>
-                    One row per person. Column headers must exactly match your template's placeholders
-                    (spaces in a header become underscores automatically, so a <code>Full Name</code> column
-                    matches <code>{{ '{{ Full_Name }}' }}</code>). Two columns are required regardless of what
-                    else is in your template:
-                </p>
-                <ul>
-                    <li>An ID column - one of <code>id</code>, <code>client id</code>, <code>member id</code>, or <code>id number</code></li>
-                    <li>A name column - one of <code>name</code>, <code>client name</code>, or <code>member name</code></li>
-                </ul>
-                <p class="mb-0">
-                    The name is used to name each output PDF, and the ID doubles as that person's password if you
-                    turn on password protection.
-                </p>
-            </div>
-        </div>
-
-        <div class="row mb-4">
-            <div class="col-1 text-center"><span class="step-number">3</span></div>
-            <div class="col-11">
-                <h5>Upload both files with your API key</h5>
-                <p class="mb-0">
-                    Head to the <a href="/api/statement_generator">generator page</a>, enter your API key, upload
-                    your template and spreadsheet, and choose whether to password-protect each PDF with that
-                    person's own ID.
-                </p>
-            </div>
-        </div>
-
-        <div class="row mb-4">
-            <div class="col-1 text-center"><span class="step-number">4</span></div>
-            <div class="col-11">
-                <h5>Download your statements</h5>
-                <p class="mb-0">
-                    Watch the progress bar while your statements are generated, then download every PDF in a
-                    single zip - each one named after the person it belongs to.
-                </p>
-            </div>
-        </div>
-
-        <div class="text-center mt-4">
-            <a href="/api/download_examples" class="btn btn-outline-primary">Download a working example (template + spreadsheet)</a>
-        </div>
+    <div class="step">
+      <div class="step-mark seal-mark">02</div>
+      <div>
+        <h3>Prepare your Excel spreadsheet</h3>
+        <p>
+          One row per person. Column headers must exactly match your template's placeholders
+          (spaces in a header become underscores automatically, so a <code>Full Name</code> column
+          matches <code>{{ '{{ Full_Name }}' }}</code>). Two columns are required regardless of what
+          else is in your template:
+        </p>
+        <ul>
+          <li>An ID column — one of <code>id</code>, <code>client id</code>, <code>member id</code>, or <code>id number</code></li>
+          <li>A name column — one of <code>name</code>, <code>client name</code>, or <code>member name</code></li>
+        </ul>
+        <p>
+          The name is used to name each output PDF, and the ID doubles as that person's password if you
+          turn on password protection.
+        </p>
+      </div>
     </div>
 
-    <!-- Features Section -->
-    <div class="container features-section">
-        <div class="row text-center">
-            <div class="col-md-4">
-                <img src="{{ url_for('static', filename='img/easy to use.png') }}" width="150" height="100" alt="Feature 1" class="img-fluid image-placeholder mb-3">
-                <h5>Easy to Use</h5>
-                <p>Upload your files, and the generator does the merging, conversion, and packaging for you.</p>
-            </div>
-            <div class="col-md-4">
-                <img src="{{ url_for('static', filename='img/safe and reliable.png') }}" width="150" height="100" alt="Feature 2" class="img-fluid image-placeholder mb-3">
-                <h5>Secure by Key</h5>
-                <p>Every request requires your own API key, and you can only ever see or download your own jobs.</p>
-            </div>
-            <div class="col-md-4">
-                <img src="{{ url_for('static', filename='img/download-1915753_960_720.webp') }}" width="150" height="100" alt="Feature 3" class="img-fluid image-placeholder mb-3">
-                <h5>Download with Ease</h5>
-                <p>Receive your files packaged in a convenient ZIP for easy download.</p>
-            </div>
-        </div>
+    <div class="step">
+      <div class="step-mark seal-mark">03</div>
+      <div>
+        <h3>Upload both files with your API key</h3>
+        <p>
+          Head to the <a href="/api/statement_generator">generator page</a>, enter your API key, upload
+          your template and spreadsheet, and choose whether to password-protect each PDF with that
+          person's own ID.
+        </p>
+      </div>
     </div>
 
-    <!-- Footer -->
-    <footer class="text-center py-3 bg-light">
-        <p class="mb-0">&copy; 2026 Statement Generator. All rights reserved.</p>
-    </footer>
+    <div class="step">
+      <div class="step-mark seal-mark">04</div>
+      <div>
+        <h3>Download your statements</h3>
+        <p>
+          Watch the progress bar while your statements are generated, then download every PDF in a
+          single zip — each one named after the person it belongs to.
+        </p>
+      </div>
+    </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <div class="example-cta">
+      <a href="/api/download_examples" class="btn btn-outline">Download a working example (template + spreadsheet)</a>
+    </div>
+  </div>
+</div>
+
+<div class="features">
+  <div class="wrap">
+    <div class="feature-grid">
+      <div>
+        <img src="{{ url_for('static', filename='img/easy to use.png') }}" width="150" height="100" alt="Feature 1">
+        <h4>Easy to use</h4>
+        <p>Upload your files, and the generator does the merging, conversion, and packaging for you.</p>
+      </div>
+      <div>
+        <img src="{{ url_for('static', filename='img/safe and reliable.png') }}" width="150" height="100" alt="Feature 2">
+        <h4>Secure by key</h4>
+        <p>Every request requires your own API key, and you can only ever see or download your own jobs.</p>
+      </div>
+      <div>
+        <img src="{{ url_for('static', filename='img/download-1915753_960_720.webp') }}" width="150" height="100" alt="Feature 3">
+        <h4>Download with ease</h4>
+        <p>Receive your files packaged in a convenient zip for easy download.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<footer>&copy; 2026 Statement Generator. All rights reserved.</footer>
+
 </body>
 </html>
