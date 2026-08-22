@@ -1,0 +1,22 @@
+<svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Shield with a keyhole">
+  <style>
+    .ink{stroke:#16213e;}
+    .seal{fill:#a9792c;}
+    .seal-line{stroke:#8a6220;}
+  </style>
+  <circle cx="100" cy="100" r="92" fill="#faf9f4" class="seal-line" stroke-width="2"/>
+
+  <!-- shield -->
+  <path d="M100 46
+           L138 60
+           V102
+           C138 132 122 148 100 158
+           C78 148 62 132 62 102
+           V60
+           Z"
+        fill="#ffffff" class="ink" stroke-width="3" stroke-linejoin="round"/>
+
+  <!-- keyhole -->
+  <circle cx="100" cy="92" r="11" class="seal"/>
+  <path d="M94 100 H106 L102 122 H98 Z" class="seal"/>
+</svg>

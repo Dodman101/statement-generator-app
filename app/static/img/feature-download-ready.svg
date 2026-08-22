@@ -1,0 +1,33 @@
+<svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Document dropping into a tray, ready to download">
+  <style>
+    .ink{stroke:#16213e;}
+    .ink-soft{stroke:#4c5674;}
+    .seal{fill:#a9792c;}
+    .seal-line{stroke:#8a6220;}
+  </style>
+  <circle cx="100" cy="100" r="92" fill="#faf9f4" class="seal-line" stroke-width="2"/>
+
+  <!-- small document sliding down -->
+  <rect x="84" y="44" width="32" height="40" rx="3" fill="#ffffff" class="ink-soft" stroke-width="2.5"/>
+  <line x1="90" y1="56" x2="110" y2="56" class="ink-soft" stroke-width="3" stroke-linecap="round"/>
+  <line x1="90" y1="66" x2="104" y2="66" class="ink-soft" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- arrow -->
+  <line x1="100" y1="86" x2="100" y2="118" class="ink" stroke-width="4" stroke-linecap="round"/>
+  <path d="M84 106 L100 126 L116 106" fill="none" class="ink" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- tray -->
+  <path d="M56 130
+           H80 L92 146 H108 L120 130
+           H144
+           V150
+           A8 8 0 0 1 136 158
+           H64
+           A8 8 0 0 1 56 150
+           Z"
+        fill="#ffffff" class="ink" stroke-width="3" stroke-linejoin="round"/>
+
+  <!-- seal badge -->
+  <circle cx="140" cy="60" r="13" class="seal" stroke="#8a6220" stroke-width="1.5"/>
+  <path d="M134 60 L138 64 L146 55" fill="none" stroke="#faf9f4" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

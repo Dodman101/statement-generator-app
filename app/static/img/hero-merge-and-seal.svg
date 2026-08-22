@@ -1,0 +1,76 @@
+<svg viewBox="0 0 800 480" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A Word template and spreadsheet merging into individually sealed PDF statements">
+  <style>
+    .ink{stroke:#16213e;}
+    .ink-soft{stroke:#4c5674;}
+    .seal-fill{fill:#a9792c;}
+    .seal-line{stroke:#8a6220;}
+    .paper-line{stroke:#d7d3c4;}
+    .label{font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size:15px;}
+  </style>
+
+  <rect x="0" y="0" width="800" height="480" fill="#edeee7"/>
+
+  <!-- ===== spreadsheet card (behind, lower-left) ===== -->
+  <g transform="translate(150,300) rotate(4)">
+    <rect x="-80" y="-70" width="180" height="130" rx="4" fill="#ffffff" class="ink-soft" stroke-width="2"/>
+    <line x1="-80" y1="-40" x2="100" y2="-40" class="paper-line" stroke-width="2"/>
+    <line x1="-80" y1="-10" x2="100" y2="-10" class="paper-line" stroke-width="2"/>
+    <line x1="-80" y1="20" x2="100" y2="20" class="paper-line" stroke-width="2"/>
+    <line x1="-30" y1="-70" x2="-30" y2="60" class="paper-line" stroke-width="2"/>
+    <line x1="20" y1="-70" x2="20" y2="60" class="paper-line" stroke-width="2"/>
+    <line x1="70" y1="-70" x2="70" y2="60" class="paper-line" stroke-width="2"/>
+  </g>
+
+  <!-- ===== template card (front, upper-left) ===== -->
+  <g transform="translate(190,190) rotate(-3)">
+    <rect x="-100" y="-110" width="220" height="260" rx="5" fill="#ffffff" class="ink" stroke-width="3"/>
+    <line x1="-76" y1="-78" x2="20" y2="-78" class="ink-soft" stroke-width="6" stroke-linecap="round"/>
+    <line x1="-76" y1="-52" x2="80" y2="-52" class="ink-soft" stroke-width="4" stroke-linecap="round"/>
+    <line x1="-76" y1="-30" x2="60" y2="-30" class="ink-soft" stroke-width="4" stroke-linecap="round"/>
+
+    <!-- placeholder chip: name -->
+    <rect x="-76" y="-14" width="86" height="20" rx="3" fill="#a9792c" opacity="0.15"/>
+    <rect x="-76" y="-14" width="86" height="20" rx="3" fill="none" class="seal-line" stroke-width="1.5"/>
+    <text x="-33" y="1" text-anchor="middle" class="label" fill="#8a6220">{{ name }}</text>
+
+    <line x1="-76" y1="18" x2="70" y2="18" class="ink-soft" stroke-width="4" stroke-linecap="round"/>
+
+    <!-- placeholder chip: balance -->
+    <rect x="-76" y="34" width="104" height="20" rx="3" fill="#a9792c" opacity="0.15"/>
+    <rect x="-76" y="34" width="104" height="20" rx="3" fill="none" class="seal-line" stroke-width="1.5"/>
+    <text x="-24" y="49" text-anchor="middle" class="label" fill="#8a6220">{{ balance }}</text>
+
+    <line x1="-76" y1="66" x2="40" y2="66" class="ink-soft" stroke-width="4" stroke-linecap="round"/>
+    <line x1="-76" y1="90" x2="90" y2="90" class="ink-soft" stroke-width="4" stroke-linecap="round"/>
+  </g>
+
+  <!-- ===== merge arrow + seal ===== -->
+  <line x1="330" y1="240" x2="430" y2="240" class="seal-line" stroke-width="4" stroke-linecap="round"/>
+  <path d="M414 224 L436 240 L414 256" fill="none" class="seal-line" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <g transform="translate(378,240)">
+    <circle r="38" fill="#faf9f4" class="seal-line" stroke-width="2.5"/>
+    <circle r="30" fill="none" class="seal-line" stroke-width="1"/>
+    <text y="6" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-style="italic" font-weight="600" font-size="13" fill="#8a6220">Seal</text>
+  </g>
+
+  <!-- ===== output: fan of sealed statements ===== -->
+  <g transform="translate(560,250) rotate(10)">
+    <rect x="-90" y="-120" width="180" height="240" rx="6" fill="#ffffff" class="ink-soft" stroke-width="2"/>
+  </g>
+  <g transform="translate(575,240) rotate(-4)">
+    <rect x="-90" y="-120" width="180" height="240" rx="6" fill="#ffffff" class="ink-soft" stroke-width="2.5"/>
+  </g>
+  <g transform="translate(590,232)">
+    <rect x="-90" y="-120" width="180" height="240" rx="6" fill="#ffffff" class="ink" stroke-width="3"/>
+    <line x1="-64" y1="-88" x2="20" y2="-88" class="ink-soft" stroke-width="5" stroke-linecap="round"/>
+    <line x1="-64" y1="-64" x2="64" y2="-64" class="paper-line" stroke-width="4" stroke-linecap="round"/>
+    <line x1="-64" y1="-44" x2="50" y2="-44" class="paper-line" stroke-width="4" stroke-linecap="round"/>
+    <line x1="-64" y1="-24" x2="60" y2="-24" class="paper-line" stroke-width="4" stroke-linecap="round"/>
+
+    <!-- wax seal on the finished statement -->
+    <circle cx="40" cy="70" r="26" class="seal-fill" stroke="#8a6220" stroke-width="1.5"/>
+    <circle cx="40" cy="70" r="19" fill="none" stroke="#faf9f4" stroke-width="1.2"/>
+    <path d="M28 71 L36 79 L52 60" fill="none" stroke="#faf9f4" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

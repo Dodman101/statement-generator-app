@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Statement Generator</title>
 <link type="image/png" sizes="16x16" rel="icon" href="{{ url_for('static', filename='img/icons8-website-clouds-16.png') }}">
+<link type="image/png" sizes="32x32" rel="icon" href="{{ url_for('static', filename='img/icons8-website-clouds-32.png') }}">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,500;0,600;1,500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/statement-generator-theme.css') }}">
@@ -92,10 +93,10 @@
   }
   .feature-grid img{
     width:100%;
-    max-height:110px;
-    object-fit:cover;
-    border:1px solid var(--paper-line);
-    margin-bottom:14px;
+    max-width:110px;
+    aspect-ratio:1/1;
+    margin:0 auto 14px;
+    display:block;
   }
   .feature-grid h4{
     font-size:16px;
@@ -115,7 +116,7 @@
     <p class="eyebrow">Merge &amp; seal</p>
     <h1>Statement Generator</h1>
     <p class="lead">Turn a Word template and an Excel spreadsheet into individually personalized, optionally password-protected PDF statements — for every row in your spreadsheet, in one go.</p>
-    <img src="{{ url_for('static', filename='img/PDF-Generation-01.png') }}" width="800" height="500" alt="Statement generation preview" class="hero-image">
+    <img src="{{ url_for('static', filename='img/hero-merge-and-seal.svg') }}" width="800" height="480" alt="A Word template and spreadsheet merging into individually sealed PDF statements" class="hero-image">
     <div class="btn-row">
       <a href="/api/statement_generator" class="btn btn-primary">Start generating statements</a>
       <a href="/api/download_examples" class="btn btn-outline">Download example files</a>
@@ -194,17 +195,17 @@
   <div class="wrap">
     <div class="feature-grid">
       <div>
-        <img src="{{ url_for('static', filename='img/easy to use.png') }}" width="150" height="100" alt="Feature 1">
+        <img src="{{ url_for('static', filename='img/feature-easy-to-use.svg') }}" width="110" height="110" alt="Feature 1">
         <h4>Easy to use</h4>
         <p>Upload your files, and the generator does the merging, conversion, and packaging for you.</p>
       </div>
       <div>
-        <img src="{{ url_for('static', filename='img/safe and reliable.png') }}" width="150" height="100" alt="Feature 2">
+        <img src="{{ url_for('static', filename='img/feature-secure-by-key.svg') }}" width="110" height="110" alt="Feature 2">
         <h4>Secure by key</h4>
         <p>Every request requires your own API key, and you can only ever see or download your own jobs.</p>
       </div>
       <div>
-        <img src="{{ url_for('static', filename='img/download-1915753_960_720.webp') }}" width="150" height="100" alt="Feature 3">
+        <img src="{{ url_for('static', filename='img/feature-download-ready.svg') }}" width="110" height="110" alt="Feature 3">
         <h4>Download with ease</h4>
         <p>Receive your files packaged in a convenient zip for easy download.</p>
       </div>
