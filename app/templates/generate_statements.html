@@ -32,6 +32,12 @@
             <div class="card-body">
                 <form id="generate-form" action="/api/process_statement" method="POST" enctype="multipart/form-data">
                     <div class="mb-3">
+                        <label for="api_key" class="form-label">API Key:</label>
+                        <input type="password" class="form-control" id="api_key" name="api_key" placeholder="sg_live_..." required>
+                        <div class="form-text">Don't have a key? Contact us to get one.</div>
+                    </div>
+
+                    <div class="mb-3">
                         <label for="template_file" class="form-label">Upload Template File:</label>
                         <input type="file" accept=".doc, .docx" class="form-control" id="template_file" name="template_file" required>
                     </div>
@@ -75,6 +81,7 @@
 
     <script>
         const form = document.getElementById('generate-form');
+        const apiKeyInput = document.getElementById('api_key');
         const submitBtn = document.getElementById('submit-btn');
         const formError = document.getElementById('form-error');
         const progressSection = document.getElementById('progress-section');
@@ -82,6 +89,15 @@
         const progressBar = document.getElementById('progress-bar');
         const downloadSection = document.getElementById('download-section');
         const downloadLink = document.getElementById('download-link');
+
+        // Remember the key locally so returning users don't retype it. This
+        // stays in the browser only - it's never sent anywhere but the
+        // X-API-Key header on requests to this same app.
+        const STORAGE_KEY = 'statement_generator_api_key';
+        const savedKey = window.localStorage.getItem(STORAGE_KEY);
+        if (savedKey) {
+            apiKeyInput.value = savedKey;
+        }
 
         // How long we keep polling before giving up on a job that never
         // reports back (network dropped, server restarted, etc). Individual
@@ -112,7 +128,7 @@
             submitBtn.textContent = 'Generate Statements';
         }
 
-        function pollProgress(tempId, downloadUrl) {
+        function pollProgress(tempId, downloadUrl, apiKey) {
             const startTime = Date.now();
             let consecutiveFailures = 0;
 
@@ -123,7 +139,7 @@
                     return;
                 }
 
-                fetch(`/api/progress/${tempId}`)
+                fetch(`/api/progress/${tempId}`, { headers: { 'X-API-Key': apiKey } })
                     .then(response => {
                         if (!response.ok && response.status !== 404) {
                             throw new Error(`Status check failed: ${response.status}`);
@@ -139,8 +155,8 @@
                             clearInterval(interval);
                             setProgress(100, data.message || 'Done!');
                             progressSection.style.display = 'none';
-                            downloadLink.setAttribute('href', downloadUrl);
                             downloadSection.style.display = 'block';
+                            downloadLink.onclick = (e) => { e.preventDefault(); downloadZip(downloadUrl, apiKey); };
                             submitBtn.disabled = false;
                             submitBtn.textContent = 'Generate Statements';
                         } else if (data.state === 'error' || data.state === 'unknown') {
@@ -159,17 +175,52 @@
             }, POLL_INTERVAL_MS);
         }
 
+        // A plain <a href> can't carry the X-API-Key header, so the download
+        // is fetched here and handed to the browser as a blob instead.
+        function downloadZip(downloadUrl, apiKey) {
+            fetch(downloadUrl, { headers: { 'X-API-Key': apiKey } })
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`Download failed: ${response.status}`);
+                    }
+                    return response.blob();
+                })
+                .then(blob => {
+                    const objectUrl = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = objectUrl;
+                    a.download = 'statements.zip';
+                    document.body.appendChild(a);
+                    a.click();
+                    a.remove();
+                    window.URL.revokeObjectURL(objectUrl);
+                })
+                .catch(error => {
+                    console.error('Error downloading zip:', error);
+                    showError('Could not download the file. Please try again.');
+                });
+        }
+
         form.addEventListener('submit', function (event) {
             event.preventDefault();
+
+            const apiKey = apiKeyInput.value.trim();
+            if (!apiKey) {
+                showError('Please enter your API key.');
+                return;
+            }
+            window.localStorage.setItem(STORAGE_KEY, apiKey);
 
             resetUI();
             submitBtn.disabled = true;
             submitBtn.textContent = 'Starting...';
 
             const formData = new FormData(this);
+            formData.delete('api_key');  // sent as a header, not part of the body
 
             fetch('/api/process_statement', {
                 method: 'POST',
+                headers: { 'X-API-Key': apiKey },
                 body: formData,
             })
                 .then(response => response.json().then(data => ({ ok: response.ok, data })))
@@ -180,7 +231,7 @@
                     }
                     submitBtn.textContent = 'Generating...';
                     setProgress(0, data.message || 'Processing started...');
-                    pollProgress(data.temp_id, data.download_link || `/api/download_statement/${data.temp_id}`);
+                    pollProgress(data.temp_id, data.download_link || `/api/download_statement/${data.temp_id}`, apiKey);
                 })
                 .catch(error => {
                     console.error('Error in /api/process_statement:', error);

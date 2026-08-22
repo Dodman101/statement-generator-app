@@ -4,7 +4,7 @@ import shutil
 import re
 from docxtpl import DocxTemplate
 from PyPDF2 import PdfWriter, PdfReader
-from flask import Blueprint, request, jsonify, current_app, render_template, send_file
+from flask import Blueprint, request, jsonify, current_app, render_template, send_file, g
 from werkzeug.utils import secure_filename
 import subprocess
 import platform
@@ -14,6 +14,9 @@ import zipfile
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event, Thread
+
+from app.auth import require_api_key
+from app.db import create_job, update_job_status, count_jobs_this_month
 
 # Initialize logger
 logging.basicConfig(level=logging.INFO)
@@ -247,30 +250,41 @@ class StatementGenerator:
         if platform.system() == 'Linux':
             env['HOME'] = '/tmp'  # avoid LibreOffice trying to use a real user profile dir
 
+        # Give this job its own LibreOffice profile directory. Without this,
+        # concurrent conversions from different jobs share the same profile
+        # and LibreOffice's instance lock makes one of them fail outright -
+        # a real problem once more than one client can be converting at once.
+        profile_dir = os.path.join('/tmp', 'lo_profiles', self.temp_id)
+        os.makedirs(profile_dir, exist_ok=True)
+        user_installation_arg = f'-env:UserInstallation=file://{profile_dir}'
+
         total = len(self.individual_letters)
         batches = [self.individual_letters[i:i + CONVERSION_BATCH_SIZE]
                    for i in range(0, total, CONVERSION_BATCH_SIZE)]
 
         converted = 0
-        for batch in batches:
-            cmd = [self.libreoffice_path, '--headless', '--convert-to', 'pdf',
-                   '--outdir', self.output_folder] + batch
-            try:
-                subprocess.run(cmd, env=env, check=True, capture_output=True, timeout=180)
-            except subprocess.CalledProcessError as e:
-                raise RuntimeError(f"PDF conversion failed: {e.stderr.decode(errors='ignore')}")
-            except subprocess.TimeoutExpired:
-                raise RuntimeError("PDF conversion timed out. Try again with a smaller batch of statements.")
+        try:
+            for batch in batches:
+                cmd = [self.libreoffice_path, '--headless', user_installation_arg, '--convert-to', 'pdf',
+                       '--outdir', self.output_folder] + batch
+                try:
+                    subprocess.run(cmd, env=env, check=True, capture_output=True, timeout=180)
+                except subprocess.CalledProcessError as e:
+                    raise RuntimeError(f"PDF conversion failed: {e.stderr.decode(errors='ignore')}")
+                except subprocess.TimeoutExpired:
+                    raise RuntimeError("PDF conversion timed out. Try again with a smaller batch of statements.")
 
-            for letter_file in batch:
-                expected_pdf = os.path.splitext(letter_file)[0] + '.pdf'
-                if not os.path.exists(expected_pdf):
-                    raise RuntimeError(f"PDF was not created for {os.path.basename(letter_file)}.")
-                os.remove(letter_file)
+                for letter_file in batch:
+                    expected_pdf = os.path.splitext(letter_file)[0] + '.pdf'
+                    if not os.path.exists(expected_pdf):
+                        raise RuntimeError(f"PDF was not created for {os.path.basename(letter_file)}.")
+                    os.remove(letter_file)
 
-            converted += len(batch)
-            progress_percent = int((converted / total) * 40) + 40  # 40% -> 80%
-            set_progress(self.temp_id, "processing", f"Converting to PDF ({converted}/{total})...", progress_percent)
+                converted += len(batch)
+                progress_percent = int((converted / total) * 40) + 40  # 40% -> 80%
+                set_progress(self.temp_id, "processing", f"Converting to PDF ({converted}/{total})...", progress_percent)
+        finally:
+            shutil.rmtree(profile_dir, ignore_errors=True)
 
     def _safe_id_from_filename(self, filename):
         """Recover the sanitized id key (used as the dict key in rows_by_safe_id)
@@ -352,9 +366,14 @@ def run_generation_job(temp_id, template_path, data_path, output_folder, passwor
     try:
         generator = StatementGenerator(template_path, data_path, output_folder, temp_id)
         generator.run(password_protection=password_protection)
+        update_job_status(temp_id, 'completed')
     except Exception as e:
         logger.error(f"Error during statement generation for {temp_id}: {e}")
         set_progress(temp_id, "error", str(e), 0)
+        try:
+            update_job_status(temp_id, 'error')
+        except Exception as db_err:
+            logger.error(f"Could not record job error in database for {temp_id}: {db_err}")
     finally:
         for path in (template_path, data_path):
             try:
@@ -376,6 +395,7 @@ def statement_generator():
 
 
 @generate_stats_bp.route('/process_statement', methods=['POST'])
+@require_api_key
 def process_statement():
     """Kick off statement generation in the background and return immediately."""
     password_protection = request.form.get('password_protection') == 'on'
@@ -391,6 +411,19 @@ def process_statement():
     if not allowed_data_file(data_file.filename):
         return jsonify({"message": "Data file must be a .xls or .xlsx file."}), 400
 
+    client = g.api_client
+    if client['monthly_job_limit'] is not None:
+        try:
+            used = count_jobs_this_month(client['id'])
+        except Exception as e:
+            logger.error(f"Database error while checking usage for client {client['id']}: {e}")
+            return jsonify({"message": "Service temporarily unavailable. Please try again shortly."}), 503
+        if used >= client['monthly_job_limit']:
+            return jsonify({
+                "message": f"Monthly limit of {client['monthly_job_limit']} jobs reached for your plan. "
+                           f"Contact us to upgrade."
+            }), 429
+
     temp_id, expiry_time = generate_temp_id()
     output_folder = create_temp_folder(temp_id)
     uploads_folder = os.path.join(output_folder, 'src')
@@ -405,8 +438,18 @@ def process_statement():
     template_file.save(template_path)
     data_file.save(data_path)
 
-    TEMP_DOWNLOADS[temp_id] = {'folder': output_folder, 'expiry': expiry_time}
+    try:
+        create_job(temp_id, client['id'])
+    except Exception as e:
+        logger.error(f"Database error while recording job {temp_id}: {e}")
+        return jsonify({"message": "Service temporarily unavailable. Please try again shortly."}), 503
+
+    # Tag the job with whoever's key started it, so progress/download checks
+    # below can't be used by a different key to peek at or pull someone
+    # else's files.
+    TEMP_DOWNLOADS[temp_id] = {'folder': output_folder, 'expiry': expiry_time, 'owner': client['id']}
     set_progress(temp_id, "processing", "Queued...", 0)
+    logger.info(f"Job {temp_id} started by client '{client['label']}' (id={client['id']})")
 
     executor.submit(run_generation_job, temp_id, template_path, data_path, output_folder, password_protection)
 
@@ -419,8 +462,16 @@ def process_statement():
 
 
 @generate_stats_bp.route('/progress/<temp_id>', methods=['GET'])
+@require_api_key
 def get_progress(temp_id):
     """Check the progress of a statement generation task."""
+    download_info = TEMP_DOWNLOADS.get(temp_id)
+    # Same "unknown" response whether the id never existed or belongs to
+    # someone else - this avoids confirming to a caller that a given temp_id
+    # exists at all if it isn't theirs.
+    if download_info is None or download_info.get('owner') != g.api_client['id']:
+        return jsonify({"state": "unknown", "message": "Unknown or expired ID.", "progress": 0}), 404
+
     task_status = PROGRESS_STATUS.get(temp_id)
     if task_status is None:
         return jsonify({"state": "unknown", "message": "Unknown or expired ID.", "progress": 0}), 404
@@ -428,10 +479,11 @@ def get_progress(temp_id):
 
 
 @generate_stats_bp.route('/download_statement/<temp_id>', methods=['GET'])
+@require_api_key
 def download_all_files(temp_id):
     """Download all generated PDF files as a zip."""
     download_info = TEMP_DOWNLOADS.get(temp_id)
-    if not download_info:
+    if download_info is None or download_info.get('owner') != g.api_client['id']:
         return jsonify({"message": "Invalid or expired download ID."}), 404
 
     task_status = PROGRESS_STATUS.get(temp_id)
