@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ page_title }} — Statement Generator</title>
+<link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='img/favicon.svg') }}">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,500;0,600;1,500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/statement-generator-theme.css') }}">
+<style>
+  .legal-header{
+    background:#faf9f4;
+    border-bottom:2px solid var(--ink);
+    padding:36px 0 28px;
+  }
+  .legal-header h1{font-size:28px; margin:0 0 6px;}
+  .legal-header .meta{font-size:12.5px; color:var(--ink-soft);}
+  .legal-nav{margin-top:14px; font-size:13px;}
+  .legal-nav a{margin-right:16px;}
+  .legal-nav a.current{color:var(--ink); text-decoration:none; border-bottom:1.5px solid var(--seal);}
+
+  .legal-body{padding:36px 0 20px;}
+  .legal-body h2{font-size:18px; margin:34px 0 10px;}
+  .legal-body h2:first-child{margin-top:0;}
+  .legal-body p, .legal-body li{font-size:14.5px; color:var(--ink); line-height:1.7;}
+  .legal-body ul{padding-left:20px;}
+  .legal-body .note{margin:18px 0;}
+</style>
+</head>
+<body>
+
+<div class="legal-header">
+  <div class="wrap">
+    <h1>{{ page_title }}</h1>
+    <p class="meta">Last updated: {{ last_updated }} &middot; Effective for accounts using the Statement Generator API and web app</p>
+    <div class="legal-nav">
+      <a href="/api/terms" class="{{ 'current' if active == 'terms' else '' }}">Terms of Service</a>
+      <a href="/api/privacy" class="{{ 'current' if active == 'privacy' else '' }}">Privacy Policy</a>
+      <a href="/">&larr; Back to Statement Generator</a>
+    </div>
+  </div>
+</div>
+
+<div class="wrap legal-body">
+  {% if active == 'terms' %}
+
+    <div class="note">
+      This is a starting draft, not legal advice, and hasn't been reviewed by a lawyer. Before relying on it -
+      especially the sections on data handling and liability - have it reviewed by counsel familiar with Kenya's
+      Data Protection Act, 2019 and any other jurisdictions your clients are in.
+    </div>
+
+    <h2>1. What this service is</h2>
+    <p>
+      Statement Generator ("the Service") lets an account holder ("you", "the account") upload a Word template and
+      a spreadsheet of data, and receive back one personalized PDF per row - optionally password-protected with
+      that row's own ID. The Service is provided by Dodman Digital, a subsidiary of Dodman Group ("we", "us").
+    </p>
+
+    <h2>2. Accounts and API keys</h2>
+    <ul>
+      <li>Access requires an API key issued by us. You're responsible for keeping your key confidential - anyone
+        with it can act as your account, including uploading files and downloading results.</li>
+      <li>If you believe your key has been exposed, contact us and we'll revoke it and issue a new one.</li>
+      <li>We may set limits on your account (jobs per month, rows per job, and which features - such as password
+        protection - are available) based on your plan. We may change these limits or suspend an account that
+        materially exceeds fair use of the Service.</li>
+    </ul>
+
+    <h2>3. Your data, and your responsibility for it</h2>
+    <ul>
+      <li>You're solely responsible for the content of anything you upload, including that you have the right to
+        process the personal data of the people named in your spreadsheets (for example, having a lawful basis
+        under applicable data protection law, and, where required, their consent).</li>
+      <li>We act as a data processor with respect to the personal data contained in files you upload for
+        processing - we act on your instructions (generate these documents) and don't use that data for any other
+        purpose.</li>
+      <li>Don't upload data you don't have the right to process, or use the Service for any unlawful purpose.</li>
+    </ul>
+
+    <h2>4. Availability and liability</h2>
+    <p>
+      The Service is provided "as is." We aim for it to be reliably available but don't guarantee uninterrupted
+      service. To the fullest extent permitted by law, we aren't liable for indirect, incidental, or consequential
+      damages arising from your use of the Service. Nothing in these terms limits liability where the law doesn't
+      allow it to be limited.
+    </p>
+
+    <h2>5. Termination</h2>
+    <p>
+      Either side can stop using/providing the Service at any time. We may suspend or revoke a key immediately if
+      we reasonably believe it's being used to violate these terms, applicable law, or to process data unlawfully.
+    </p>
+
+    <h2>6. Changes</h2>
+    <p>
+      We may update these terms as the Service evolves. Material changes will update the "Last updated" date
+      above; continued use after a change means you accept the updated terms.
+    </p>
+
+    <h2>7. Contact</h2>
+    <p>Questions about these terms: <a href="mailto:legal@dodman.group">legal@dodman.group</a>.</p>
+
+  {% else %}
+
+    <div class="note">
+      This is a starting draft, not legal advice, and hasn't been reviewed by a lawyer. Kenya's Data Protection Act,
+      2019 requires data controllers and processors to register with the Office of the Data Protection Commissioner
+      (ODPC) - confirm your registration status and obligations with the ODPC or counsel before relying on this
+      page, particularly if you or your clients operate outside Kenya too.
+    </div>
+
+    <h2>1. What we collect</h2>
+    <ul>
+      <li><strong>Account information:</strong> a label for your account and a hashed copy of your API key. We
+        never store your key in plain text - only a one-way hash, so we can verify it without being able to see it.</li>
+      <li><strong>Files you upload:</strong> the Word template and spreadsheet you submit for a given job, and the
+        PDF statements generated from them. These may contain personal data about the people named in your
+        spreadsheet (names, ID numbers, and whatever else your template includes).</li>
+      <li><strong>Job metadata:</strong> when a job ran, how many rows it processed, and whether it succeeded - used
+        for enforcing plan limits and for our own troubleshooting. This does not include the content of your files.</li>
+    </ul>
+
+    <h2>2. How long we keep it</h2>
+    <ul>
+      <li>Uploaded templates and spreadsheets are deleted from disk as soon as processing finishes (success or
+        failure) - they are never kept longer than the single job that used them.</li>
+      <li>Generated PDF statements are available for download for up to 2 hours after a job completes, after which
+        they're automatically and permanently deleted.</li>
+      <li>Job metadata (row counts, timestamps, pass/fail status - not file content) is retained for usage
+        tracking and billing history.</li>
+    </ul>
+
+    <h2>3. Where it's processed and stored</h2>
+    <p>
+      Files are processed on our application server (currently hosted on Render) and are not copied anywhere else.
+      Account and job metadata is stored in a Postgres database (currently hosted on Neon). Each account's job
+      records are isolated using database-level access controls (Row-Level Security), so one account's data cannot
+      be read by a database query scoped to another account - even by mistake in our own code.
+    </p>
+
+    <h2>4. Who else sees it</h2>
+    <p>
+      We don't sell or share your data with third parties for marketing. The only parties with any access are
+      infrastructure providers that host the Service (currently Render for compute and Neon for the database), who
+      process data solely to provide that hosting.
+    </p>
+
+    <h2>5. Your rights</h2>
+    <p>
+      Depending on where you or your data subjects are located, you may have rights to access, correct, or request
+      deletion of personal data, and to object to or restrict certain processing. Given our short retention window
+      for files, most requests are already satisfied automatically - contact us if you need something specific
+      (for example, deleting job metadata early).
+    </p>
+
+    <h2>6. Security</h2>
+    <ul>
+      <li>API keys are stored as one-way hashes, never in plain text.</li>
+      <li>All traffic to the Service is encrypted in transit (HTTPS).</li>
+      <li>Optional password protection lets you lock each generated PDF with that row's own ID.</li>
+      <li>Account data is isolated at the database level using Row-Level Security, not just application-level checks.</li>
+    </ul>
+
+    <h2>7. Contact</h2>
+    <p>Questions or requests about your data: <a href="mailto:legal@dodman.group">legal@dodman.group</a>.</p>
+
+  {% endif %}
+</div>
+
+<footer>&copy; 2026 Statement Generator. All rights reserved. &middot; <a href="/api/terms">Terms</a> &middot; <a href="/api/privacy">Privacy</a></footer>
+
+</body>
+</html>

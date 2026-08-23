@@ -467,6 +467,16 @@ def statement_generator():
     return render_template('generate_statements.html')
 
 
+@generate_stats_bp.route('/terms', methods=['GET'])
+def terms():
+    return render_template('legal_page.html', page_title='Terms of Service', active='terms', last_updated='23 August 2026')
+
+
+@generate_stats_bp.route('/privacy', methods=['GET'])
+def privacy():
+    return render_template('legal_page.html', page_title='Privacy Policy', active='privacy', last_updated='23 August 2026')
+
+
 @generate_stats_bp.route('/download_examples', methods=['GET'])
 def download_examples():
     """Public - lets a prospective user see exactly what a working
