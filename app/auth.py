@@ -9,6 +9,7 @@ from functools import wraps
 from flask import request, jsonify, g
 
 from app.db import get_client_by_key
+from app.observability import capture_service_error
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +24,7 @@ def require_api_key(view_func):
         try:
             client = get_client_by_key(supplied_key)
         except Exception as e:
-            logger.error(f"Database error while validating API key: {e}")
+            capture_service_error(e, where="require_api_key")
             return jsonify({"message": "Service temporarily unavailable. Please try again shortly."}), 503
 
         if not client:

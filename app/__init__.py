@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 from app.utils import create_folders
 from app.routes.generate_statements import generate_stats_bp
 from app.db import init_schema
+from app.observability import init_error_tracking
 
 # Load environment variables from .env file
 load_dotenv()
@@ -14,6 +15,8 @@ logger = logging.getLogger(__name__)
 def create_app():
     app = Flask(__name__)
     app.config['SECRET_KEY'] = os.getenv('STATEMENT_GENERATOR_KEY', 'DEFAULT_API_KEY')
+
+    init_error_tracking(app_env=os.getenv('APP_ENV', 'production'))
 
     # Set configuration variables
     app.config['UPLOAD_FOLDER'] = os.path.abspath('app/uploads')

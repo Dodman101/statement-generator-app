@@ -16,7 +16,8 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Event, Thread
 
 from app.auth import require_api_key
-from app.db import create_job, update_job_status, count_jobs_this_month
+from app.db import create_job, update_job_status, count_jobs_this_month, get_connection
+from app.observability import capture_job_failure, capture_service_error
 
 # Initialize logger
 logging.basicConfig(level=logging.INFO)
@@ -419,15 +420,15 @@ class StatementGenerator:
         set_progress(self.temp_id, "completed", "Done - your statements are ready.", 100, warnings=warnings)
 
 
-def run_generation_job(temp_id, client_id, template_path, data_path, output_folder, password_protection):
+def run_generation_job(temp_id, client_id, client_label, template_path, data_path, output_folder, password_protection):
     """Runs in the background thread pool. Always cleans up the source uploads."""
     try:
         generator = StatementGenerator(template_path, data_path, output_folder, temp_id)
         generator.run(password_protection=password_protection)
         update_job_status(temp_id, 'completed', client_id)
     except Exception as e:
-        logger.error(f"Error during statement generation for {temp_id}: {e}")
         set_progress(temp_id, "error", str(e), 0)
+        capture_job_failure(e, temp_id=temp_id, client_label=client_label, client_id=client_id)
         try:
             update_job_status(temp_id, 'error', client_id)
         except Exception as db_err:
@@ -460,6 +461,22 @@ def generate_temp_id():
     temp_id = str(uuid.uuid4())
     expiry_time = datetime.utcnow() + timedelta(hours=2)
     return temp_id, expiry_time
+
+
+@generate_stats_bp.route('/health', methods=['GET'])
+def health():
+    """Public, unauthenticated - for uptime monitoring (UptimeRobot, Render's
+    own health checks, etc). Checks the one dependency that actually matters:
+    can we reach the database. A 503 here means clients are about to start
+    seeing errors too, so this is meant to catch that before they report it."""
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+        return jsonify({"status": "ok"}), 200
+    except Exception as e:
+        capture_service_error(e, where="health_check")
+        return jsonify({"status": "error", "message": "Database unreachable."}), 503
 
 
 @generate_stats_bp.route('/statement_generator', methods=['GET'])
@@ -520,7 +537,7 @@ def process_statement():
         try:
             used = count_jobs_this_month(client['id'])
         except Exception as e:
-            logger.error(f"Database error while checking usage for client {client['id']}: {e}")
+            capture_service_error(e, where="process_statement.count_jobs_this_month", client_id=client['id'])
             return jsonify({"message": "Service temporarily unavailable. Please try again shortly."}), 503
         if used >= client['monthly_job_limit']:
             return jsonify({
@@ -562,7 +579,8 @@ def process_statement():
     try:
         create_job(temp_id, client['id'], row_count=row_count)
     except Exception as e:
-        logger.error(f"Database error while recording job {temp_id}: {e}")
+        shutil.rmtree(output_folder, ignore_errors=True)
+        capture_service_error(e, where="process_statement.create_job", client_id=client['id'], temp_id=temp_id)
         return jsonify({"message": "Service temporarily unavailable. Please try again shortly."}), 503
 
     # Tag the job with whoever's key started it, so progress/download checks
@@ -572,7 +590,7 @@ def process_statement():
     set_progress(temp_id, "processing", "Queued...", 0)
     logger.info(f"Job {temp_id} started by client '{client['label']}' (id={client['id']})")
 
-    executor.submit(run_generation_job, temp_id, client['id'], template_path, data_path, output_folder, password_protection)
+    executor.submit(run_generation_job, temp_id, client['id'], client['label'], template_path, data_path, output_folder, password_protection)
 
     return jsonify({
         "temp_id": temp_id,
