@@ -9,6 +9,8 @@ apt-get install -y --no-install-recommends \
     libreoffice \
     libreoffice-writer \
     fonts-liberation \
+    fonts-crosextra-carlito \
+    fonts-crosextra-caladea \
     python3-uno \
     xvfb
 
