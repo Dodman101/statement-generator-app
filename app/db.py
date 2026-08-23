@@ -35,9 +35,23 @@ def _dsn():
 
 
 @contextmanager
-def get_connection():
+def get_connection(client_id=None):
+    """When client_id is given, the connection is pinned to that tenant for
+    its whole transaction (via a session-local Postgres setting), and Row-
+    Level Security on statement_jobs enforces it - so even a future query
+    against that table that forgets its own WHERE client_id = ... clause
+    still can't read or write another tenant's rows. This is enforced by
+    Postgres itself, not by this function remembering to filter correctly.
+    """
     conn = psycopg2.connect(_dsn())
     try:
+        if client_id is not None:
+            with conn.cursor() as cur:
+                # set_config (not a raw `SET ... = %s`) is what accepts a
+                # normal parameterized value here, so this can never become
+                # a SQL-injection vector even though client_id ultimately
+                # traces back to a request.
+                cur.execute("SELECT set_config('app.current_client_id', %s, true)", (str(client_id),))
         yield conn
         conn.commit()
     except Exception:
@@ -45,6 +59,32 @@ def get_connection():
         raise
     finally:
         conn.close()
+
+
+def _ensure_jobs_rls(cur):
+    """Row-Level Security on statement_jobs, scoped to the session's
+    app.current_client_id. FORCE makes it apply even to the role that owns
+    the table (Postgres exempts table owners from RLS by default, and the
+    role in your Neon connection string is typically the owner since it's
+    the one that ran CREATE TABLE) - without FORCE, this app's own normal
+    connection could silently bypass the policy it just created.
+    """
+    cur.execute("ALTER TABLE statement_jobs ENABLE ROW LEVEL SECURITY;")
+    cur.execute("ALTER TABLE statement_jobs FORCE ROW LEVEL SECURITY;")
+    cur.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_policies
+                WHERE tablename = 'statement_jobs' AND policyname = 'tenant_isolation'
+            ) THEN
+                CREATE POLICY tenant_isolation ON statement_jobs
+                    USING (client_id = current_setting('app.current_client_id', true)::integer)
+                    WITH CHECK (client_id = current_setting('app.current_client_id', true)::integer);
+            END IF;
+        END
+        $$;
+    """)
 
 
 def init_schema():
@@ -79,6 +119,7 @@ def init_schema():
                 );
             """)
             cur.execute("CREATE INDEX IF NOT EXISTS idx_jobs_client_created ON statement_jobs(client_id, created_at);")
+            _ensure_jobs_rls(cur)
     logger.info("Database schema is up to date.")
 
 
@@ -88,7 +129,13 @@ def hash_key(raw_key):
 
 def get_client_by_key(raw_key):
     """Returns a dict {id, label, plan, monthly_job_limit, max_rows_per_job,
-    password_protection_allowed} or None."""
+    password_protection_allowed} or None.
+
+    Not RLS-scoped: this is the auth bootstrap itself, run before we know
+    who's calling. It only ever matches the one row whose key_hash equals
+    the hash of the exact key supplied, so it can't be used to read or
+    enumerate any other client's data.
+    """
     with get_connection() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
@@ -100,7 +147,7 @@ def get_client_by_key(raw_key):
 
 
 def count_jobs_this_month(client_id):
-    with get_connection() as conn:
+    with get_connection(client_id=client_id) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT COUNT(*) FROM statement_jobs "
@@ -111,7 +158,7 @@ def count_jobs_this_month(client_id):
 
 
 def create_job(temp_id, client_id, row_count=None):
-    with get_connection() as conn:
+    with get_connection(client_id=client_id) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO statement_jobs (temp_id, client_id, status, row_count) VALUES (%s, %s, 'processing', %s)",
@@ -119,8 +166,8 @@ def create_job(temp_id, client_id, row_count=None):
             )
 
 
-def update_job_status(temp_id, status):
-    with get_connection() as conn:
+def update_job_status(temp_id, status, client_id):
+    with get_connection(client_id=client_id) as conn:
         with conn.cursor() as cur:
             if status in ('completed', 'error'):
                 cur.execute(

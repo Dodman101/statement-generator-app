@@ -59,10 +59,33 @@ def allowed_data_file(filename):
     return _extension(filename) in ALLOWED_DATA_EXTENSIONS
 
 
-def create_temp_folder(temp_id):
-    """Create a temporary folder for a specific temp_id."""
+def _client_root(client_id):
+    """The filesystem root that belongs to one client, and nobody else.
+    Every job folder for this client lives under here - never directly
+    under the shared statement_generator/ directory."""
     base_folder = '/tmp' if platform.system() == 'Linux' else current_app.config['UPLOAD_FOLDER']
-    folder_path = os.path.join(base_folder, 'statement_generator', temp_id)
+    return os.path.join(base_folder, 'statement_generator', f'client_{client_id}')
+
+
+def _safe_join(root, *parts):
+    """Join path components under `root` and refuse to return anything outside
+    it. This isn't a check bolted onto one call site - it's the only function
+    in this codebase allowed to build a job's on-disk path, so "does this path
+    belong to this client" is enforced by construction rather than by every
+    caller remembering to check. temp_id is always a server-generated UUID
+    today, never something a user can type into a request, but this guard
+    means that stays true even if a future change loosens that assumption.
+    """
+    root = os.path.realpath(root)
+    candidate = os.path.realpath(os.path.join(root, *parts))
+    if candidate != root and not candidate.startswith(root + os.sep):
+        raise ValueError(f"Refusing to build a path outside its owner's root: {candidate}")
+    return candidate
+
+
+def create_temp_folder(client_id, temp_id):
+    """Create this job's folder, nested under this client's own root."""
+    folder_path = _safe_join(_client_root(client_id), temp_id)
     os.makedirs(folder_path, exist_ok=True)
     return folder_path
 
@@ -79,6 +102,11 @@ def cleanup_expired_downloads():
             try:
                 shutil.rmtree(download_info['folder'], ignore_errors=True)
                 logger.info(f"Cleaned up expired files for temp_id: {temp_id}")
+                # Tidy up the now-possibly-empty client_<id> directory too,
+                # so /tmp doesn't accumulate one empty folder per client forever.
+                client_root = os.path.dirname(download_info['folder'])
+                if os.path.isdir(client_root) and not os.listdir(client_root):
+                    os.rmdir(client_root)
             except Exception as e:
                 logger.error(f"Error cleaning up temp_id {temp_id}: {e}")
 
@@ -391,17 +419,17 @@ class StatementGenerator:
         set_progress(self.temp_id, "completed", "Done - your statements are ready.", 100, warnings=warnings)
 
 
-def run_generation_job(temp_id, template_path, data_path, output_folder, password_protection):
+def run_generation_job(temp_id, client_id, template_path, data_path, output_folder, password_protection):
     """Runs in the background thread pool. Always cleans up the source uploads."""
     try:
         generator = StatementGenerator(template_path, data_path, output_folder, temp_id)
         generator.run(password_protection=password_protection)
-        update_job_status(temp_id, 'completed')
+        update_job_status(temp_id, 'completed', client_id)
     except Exception as e:
         logger.error(f"Error during statement generation for {temp_id}: {e}")
         set_progress(temp_id, "error", str(e), 0)
         try:
-            update_job_status(temp_id, 'error')
+            update_job_status(temp_id, 'error', client_id)
         except Exception as db_err:
             logger.error(f"Could not record job error in database for {temp_id}: {db_err}")
     finally:
@@ -491,7 +519,7 @@ def process_statement():
             }), 429
 
     temp_id, expiry_time = generate_temp_id()
-    output_folder = create_temp_folder(temp_id)
+    output_folder = create_temp_folder(client['id'], temp_id)
     uploads_folder = os.path.join(output_folder, 'src')
     os.makedirs(uploads_folder, exist_ok=True)
 
@@ -534,7 +562,7 @@ def process_statement():
     set_progress(temp_id, "processing", "Queued...", 0)
     logger.info(f"Job {temp_id} started by client '{client['label']}' (id={client['id']})")
 
-    executor.submit(run_generation_job, temp_id, template_path, data_path, output_folder, password_protection)
+    executor.submit(run_generation_job, temp_id, client['id'], template_path, data_path, output_folder, password_protection)
 
     return jsonify({
         "temp_id": temp_id,
@@ -555,6 +583,19 @@ def get_progress(temp_id):
     if download_info is None or download_info.get('owner') != g.api_client['id']:
         return jsonify({"state": "unknown", "message": "Unknown or expired ID.", "progress": 0}), 404
 
+    # Belt-and-suspenders: the folder path we're about to report on must
+    # exactly match what this client's own root would produce for this
+    # temp_id. The ownership check above already guarantees this in normal
+    # operation - this catches the case where it wouldn't (e.g. a TEMP_DOWNLOADS
+    # entry corrupted by a future bug).
+    try:
+        expected_folder = _safe_join(_client_root(g.api_client['id']), temp_id)
+    except ValueError:
+        return jsonify({"state": "unknown", "message": "Unknown or expired ID.", "progress": 0}), 404
+    if os.path.realpath(download_info['folder']) != expected_folder:
+        logger.error(f"Folder for {temp_id} is not under client {g.api_client['id']}'s root - refusing to report on it.")
+        return jsonify({"state": "unknown", "message": "Unknown or expired ID.", "progress": 0}), 404
+
     task_status = PROGRESS_STATUS.get(temp_id)
     if task_status is None:
         return jsonify({"state": "unknown", "message": "Unknown or expired ID.", "progress": 0}), 404
@@ -567,6 +608,14 @@ def download_all_files(temp_id):
     """Download all generated PDF files as a zip."""
     download_info = TEMP_DOWNLOADS.get(temp_id)
     if download_info is None or download_info.get('owner') != g.api_client['id']:
+        return jsonify({"message": "Invalid or expired download ID."}), 404
+
+    try:
+        expected_folder = _safe_join(_client_root(g.api_client['id']), temp_id)
+    except ValueError:
+        return jsonify({"message": "Invalid or expired download ID."}), 404
+    if os.path.realpath(download_info['folder']) != expected_folder:
+        logger.error(f"Folder for {temp_id} is not under client {g.api_client['id']}'s root - refusing to serve it.")
         return jsonify({"message": "Invalid or expired download ID."}), 404
 
     task_status = PROGRESS_STATUS.get(temp_id)
