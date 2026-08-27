@@ -139,7 +139,7 @@ def set_progress(temp_id, state, message, progress, warnings=None):
 
 
 class StatementGenerator:
-    ID_HEADER_NAMES = {'id', 'client id', 'member id', 'id number'}
+    ID_HEADER_NAMES = {'id', 'client id', 'member id', 'id number', 'id_number'}
     NAME_HEADER_NAMES = {'name', 'client name', 'member name'}
 
     def __init__(self, template_path, data_path, output_folder, temp_id):
