@@ -1,82 +1,123 @@
+"""
+Statement generation routes - FastAPI port of the original Flask blueprint.
+
+Background job model: StatementGenerator.run() is pure blocking code
+(subprocess calls to LibreOffice, synchronous file I/O, docxtpl rendering)
+and stays exactly that way - rewriting it to be "async" wouldn't make any
+of that actually non-blocking, since LibreOffice itself is a subprocess, not
+an async-aware library. Instead, run_generation_job() is a coroutine that
+hands the blocking work to a dedicated ThreadPoolExecutor via
+loop.run_in_executor(), then awaits the (now-async) database update once
+that returns. This keeps the "at most 5 concurrent conversions" concurrency
+limit from the original design, while letting the DB calls use asyncpg
+properly instead of blocking the event loop.
+"""
 import os
-import openpyxl
-import shutil
 import re
-from docxtpl import DocxTemplate
-from PyPDF2 import PdfWriter, PdfReader
-from flask import Blueprint, request, jsonify, current_app, render_template, send_file, g
-from werkzeug.utils import secure_filename
+import shutil
 import subprocess
 import platform
 import logging
 import uuid
 import zipfile
+import asyncio
 from datetime import datetime, timedelta
-from concurrent.futures import ThreadPoolExecutor
 from threading import Event, Thread
+from concurrent.futures import ThreadPoolExecutor
+
+import openpyxl
+from docxtpl import DocxTemplate
+from PyPDF2 import PdfWriter, PdfReader
+from werkzeug.utils import secure_filename
+
+from fastapi import APIRouter, Request, Depends, HTTPException, UploadFile, File, Form
+from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
 
 from app.auth import require_api_key
 from app.db import create_job, update_job_status, count_jobs_this_month, get_connection
 from app.observability import capture_job_failure, capture_service_error
 
-# Initialize logger
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Flask blueprint
-generate_stats_bp = Blueprint('generate_stats', __name__)
+router = APIRouter(tags=["statement-generator"])
 
-# Allowed file extensions for uploads
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # app/
+TEMPLATES_DIR = os.path.join(BASE_DIR, 'templates')
+STATIC_DIR = os.path.join(BASE_DIR, 'static')
+templates = Jinja2Templates(directory=TEMPLATES_DIR)
+
 ALLOWED_TEMPLATE_EXTENSIONS = {'docx', 'doc'}
 ALLOWED_DATA_EXTENSIONS = {'xlsx', 'xls'}
 
 # Temporary downloads and progress tracking.
-# NOTE: these live in process memory. That's fine as long as the app runs as a
-# single worker process (e.g. `gunicorn -w 1 --threads 8 run:app`). If you ever
-# scale to multiple worker processes, a request can land on a worker that never
-# ran the job and progress/download lookups will 404 - move this to Redis (or
-# similar) before doing that.
+# NOTE: these live in process memory. That's fine as long as the app runs as
+# a single worker process (e.g. `uvicorn main:app --workers 1`). If you ever
+# scale to multiple worker processes, a request can land on a worker that
+# never ran the job and progress/download lookups will 404 - move this to
+# Redis (or similar) before doing that.
 TEMP_DOWNLOADS = {}
 PROGRESS_STATUS = {}
 
-# How many docx files to hand to a single LibreOffice invocation. Batching
-# beats converting one-by-one because most of the cost is LibreOffice's
-# startup time, not the actual conversion.
 CONVERSION_BATCH_SIZE = 15
 
-# Thread pool for background generation jobs (not for the cleanup loop - see below).
+# Dedicated thread pool for the blocking generation work (LibreOffice +
+# docxtpl). Separate from FastAPI/uvicorn's own thread pool so job
+# concurrency is a deliberate, bounded number, not whatever uvicorn happens
+# to be running.
 executor = ThreadPoolExecutor(max_workers=5)
 
 
-def _extension(filename):
+# ---------------------------------------------------------------------------
+# Response models - so /docs shows real schemas, not untyped dicts.
+# ---------------------------------------------------------------------------
+
+class ProcessStatementResponse(BaseModel):
+    temp_id: str
+    message: str
+    status_url: str
+    download_link: str
+
+
+class ProgressResponse(BaseModel):
+    state: str
+    message: str
+    progress: int
+    warnings: list[str] | None = None
+
+
+class HealthResponse(BaseModel):
+    status: str
+    message: str | None = None
+
+
+def _extension(filename: str) -> str:
     return filename.rsplit('.', 1)[1].lower() if '.' in filename else ''
 
 
-def allowed_template(filename):
+def allowed_template(filename: str) -> bool:
     return _extension(filename) in ALLOWED_TEMPLATE_EXTENSIONS
 
 
-def allowed_data_file(filename):
+def allowed_data_file(filename: str) -> bool:
     return _extension(filename) in ALLOWED_DATA_EXTENSIONS
 
 
-def _client_root(client_id):
+def _client_root(client_id) -> str:
     """The filesystem root that belongs to one client, and nobody else.
     Every job folder for this client lives under here - never directly
     under the shared statement_generator/ directory."""
-    base_folder = '/tmp' if platform.system() == 'Linux' else current_app.config['UPLOAD_FOLDER']
+    base_folder = '/tmp' if platform.system() == 'Linux' else BASE_DIR
     return os.path.join(base_folder, 'statement_generator', f'client_{client_id}')
 
 
-def _safe_join(root, *parts):
+def _safe_join(root: str, *parts) -> str:
     """Join path components under `root` and refuse to return anything outside
     it. This isn't a check bolted onto one call site - it's the only function
     in this codebase allowed to build a job's on-disk path, so "does this path
     belong to this client" is enforced by construction rather than by every
-    caller remembering to check. temp_id is always a server-generated UUID
-    today, never something a user can type into a request, but this guard
-    means that stays true even if a future change loosens that assumption.
-    """
+    caller remembering to check."""
     root = os.path.realpath(root)
     candidate = os.path.realpath(os.path.join(root, *parts))
     if candidate != root and not candidate.startswith(root + os.sep):
@@ -84,7 +125,7 @@ def _safe_join(root, *parts):
     return candidate
 
 
-def create_temp_folder(client_id, temp_id):
+def create_temp_folder(client_id, temp_id: str) -> str:
     """Create this job's folder, nested under this client's own root."""
     folder_path = _safe_join(_client_root(client_id), temp_id)
     os.makedirs(folder_path, exist_ok=True)
@@ -103,8 +144,6 @@ def cleanup_expired_downloads():
             try:
                 shutil.rmtree(download_info['folder'], ignore_errors=True)
                 logger.info(f"Cleaned up expired files for temp_id: {temp_id}")
-                # Tidy up the now-possibly-empty client_<id> directory too,
-                # so /tmp doesn't accumulate one empty folder per client forever.
                 client_root = os.path.dirname(download_info['folder'])
                 if os.path.isdir(client_root) and not os.listdir(client_root):
                     os.rmdir(client_root)
@@ -121,17 +160,13 @@ def schedule_cleanup():
         cleanup_stop_event.wait(600)
 
 
-# Run cleanup on its own daemon thread rather than inside the ThreadPoolExecutor -
-# submitting it to the executor permanently occupied one of the worker slots
-# meant for actual statement-generation jobs.
+# Plain daemon thread, not asyncio - this loop doesn't touch the DB or need
+# to run on the event loop, and starting it here (module import time) keeps
+# it identical to the original design.
 Thread(target=schedule_cleanup, daemon=True).start()
 
 
 def set_progress(temp_id, state, message, progress, warnings=None):
-    """state is one of: 'processing', 'completed', 'error'. progress is 0-100.
-    warnings, when present, is a list of short strings surfaced to the caller
-    alongside a 'completed' state - e.g. rows that were generated but couldn't
-    be password-protected."""
     entry = {"state": state, "message": message, "progress": progress}
     if warnings:
         entry["warnings"] = warnings
@@ -139,7 +174,10 @@ def set_progress(temp_id, state, message, progress, warnings=None):
 
 
 class StatementGenerator:
-    ID_HEADER_NAMES = {'id', 'client id', 'member id', 'id number', 'id_number'}
+    """Unchanged from the Flask version - this is pure blocking code with no
+    framework dependency at all, so there's nothing to port here."""
+
+    ID_HEADER_NAMES = {'id', 'client id', 'member id', 'id number'}
     NAME_HEADER_NAMES = {'name', 'client name', 'member name'}
 
     def __init__(self, template_path, data_path, output_folder, temp_id):
@@ -151,15 +189,7 @@ class StatementGenerator:
         self.sheet = self.workbook.active
         self.header_row = next(self.sheet.iter_rows(values_only=True))
         self.individual_letters = []
-        # Maps the sanitized id used in each generated filename -> the raw
-        # client id/name for that row, built once in generate_documents() so
-        # every later step (conversion, renaming, password protection) reads
-        # from the same source of truth instead of re-deriving it from a
-        # separately-ordered directory listing.
         self.rows_by_safe_id = {}
-        # Names of rows that were generated without an ID - and so, if password
-        # protection is requested, without a password. Populated during
-        # apply_password_protection() and surfaced to the caller as warnings.
         self.unprotected_names = []
         self.libreoffice_path = self._get_libreoffice_path()
 
@@ -177,7 +207,6 @@ class StatementGenerator:
         return None
 
     def _get_libreoffice_path(self):
-        """Get the LibreOffice executable path with enhanced Linux support."""
         if platform.system() == 'Linux':
             linux_paths = [
                 '/usr/bin/soffice',
@@ -193,27 +222,22 @@ class StatementGenerator:
                         return matching_paths[0]
                 elif os.path.exists(path):
                     return path
-
             try:
                 result = subprocess.run(['which', 'soffice'], capture_output=True, text=True)
                 if result.returncode == 0 and result.stdout.strip():
                     return result.stdout.strip()
             except subprocess.SubprocessError:
                 pass
-
             snap_path = '/snap/bin/libreoffice'
             if os.path.exists(snap_path):
                 return snap_path
-
             logger.warning("LibreOffice not found in common locations. Please install it using: sudo apt-get install libreoffice")
             return None
-
         elif platform.system() == 'Windows':
             for path in (r'C:\Program Files\LibreOffice\program\soffice.exe',
                          r'C:\Program Files (x86)\LibreOffice\program\soffice.exe'):
                 if os.path.exists(path):
                     return path
-
         return 'soffice'
 
     def format_number(self, value):
@@ -222,7 +246,6 @@ class StatementGenerator:
         return str(value) if value is not None else "-"
 
     def validate_template(self):
-        """Validate that all placeholders in the template match Excel headers."""
         template = DocxTemplate(self.template_path)
         placeholders = template.get_undeclared_template_variables()
         available_fields = {h.strip().replace(' ', '_') for h in self.header_row if h}
@@ -231,25 +254,20 @@ class StatementGenerator:
             raise ValueError(f"Template fields not found in Excel headers: {', '.join(sorted(missing_fields))}")
 
     def generate_documents(self):
-        """Generate a Word document per data row, and record which client each file belongs to."""
         set_progress(self.temp_id, "processing", "Generating documents...", 5)
         total_rows = max(self.sheet.max_row - 1, 0)
-
         if total_rows == 0:
             raise ValueError("The data file has no data rows below the header.")
 
         for index, row in enumerate(self.sheet.iter_rows(min_row=2, values_only=True), start=1):
             if not row or all(v is None for v in row):
-                continue  # skip fully blank rows
+                continue
 
             client_id = row[self.id_column_index]
             client_name = row[self.name_column_index]
             if client_name is None or str(client_name).strip() == '':
                 raise ValueError(f"Row {index + 1} is missing a value in the name column.")
 
-            # A blank ID shouldn't fail the whole batch - it just means this
-            # one statement can't be named/protected by ID. Fall back to the
-            # row's name (plus row number, for uniqueness) as the file key.
             id_missing = client_id is None or str(client_id).strip() == ''
             if id_missing:
                 name_part = re.sub(r'[^a-zA-Z0-9_-]', '_', str(client_name).strip())[:30]
@@ -257,8 +275,6 @@ class StatementGenerator:
             else:
                 safe_id = re.sub(r'[^a-zA-Z0-9_-]', '_', str(client_id).strip())
 
-            # Guard against two rows sharing the same ID, which would otherwise
-            # silently overwrite one client's statement with another's.
             if safe_id in self.rows_by_safe_id:
                 safe_id = f"{safe_id}_{index}"
 
@@ -282,25 +298,19 @@ class StatementGenerator:
                 raise RuntimeError(f"Failed to generate document for row {index + 1} ({client_name}): {e}")
 
             self.individual_letters.append(output_path)
-
-            progress_percent = int((index / total_rows) * 35) + 5  # 5% -> 40%
+            progress_percent = int((index / total_rows) * 35) + 5
             set_progress(self.temp_id, "processing", f"Generating document {index}/{total_rows}...", progress_percent)
 
         set_progress(self.temp_id, "processing", "Document generation complete.", 40)
 
     def convert_to_pdf(self):
-        """Convert generated Word documents to PDFs using LibreOffice, in batches."""
         if not self.libreoffice_path:
             raise RuntimeError("LibreOffice not found on the server. Install it with: sudo apt-get install libreoffice")
 
         env = os.environ.copy()
         if platform.system() == 'Linux':
-            env['HOME'] = '/tmp'  # avoid LibreOffice trying to use a real user profile dir
+            env['HOME'] = '/tmp'
 
-        # Give this job its own LibreOffice profile directory. Without this,
-        # concurrent conversions from different jobs share the same profile
-        # and LibreOffice's instance lock makes one of them fail outright -
-        # a real problem once more than one client can be converting at once.
         profile_dir = os.path.join('/tmp', 'lo_profiles', self.temp_id)
         os.makedirs(profile_dir, exist_ok=True)
         user_installation_arg = f'-env:UserInstallation=file://{profile_dir}'
@@ -328,38 +338,26 @@ class StatementGenerator:
                     os.remove(letter_file)
 
                 converted += len(batch)
-                progress_percent = int((converted / total) * 40) + 40  # 40% -> 80%
+                progress_percent = int((converted / total) * 40) + 40
                 set_progress(self.temp_id, "processing", f"Converting to PDF ({converted}/{total})...", progress_percent)
         finally:
             shutil.rmtree(profile_dir, ignore_errors=True)
 
     def _safe_id_from_filename(self, filename):
-        """Recover the sanitized id key (used as the dict key in rows_by_safe_id)
-        from a still-prefixed 'output_<safe_id>.pdf' filename."""
         if filename.startswith("output_") and filename.endswith(".pdf"):
             return filename[len("output_"):-len(".pdf")]
         return None
 
     def apply_password_protection(self):
-        """Password-protect each PDF with its own client's ID.
-
-        Runs before rename_pdfs(), while files are still named
-        'output_<safe_id>.pdf' - that sanitized id is the same key generate_documents()
-        used in rows_by_safe_id, so the match is exact and never depends on
-        filesystem listing order (unlike the previous zip()-based approach).
-        """
         set_progress(self.temp_id, "processing", "Applying password protection...", 88)
-
         for filename in os.listdir(self.output_folder):
             if not filename.endswith(".pdf"):
                 continue
-
             safe_id = self._safe_id_from_filename(filename)
             row_info = self.rows_by_safe_id.get(safe_id) if safe_id else None
             if not row_info:
                 logger.warning(f"No client record found for '{filename}'; skipping password protection for this file.")
                 continue
-
             if row_info.get('id_missing'):
                 logger.warning(f"Skipping password protection for '{row_info['name']}' - no ID was provided for this row.")
                 self.unprotected_names.append(row_info['name'])
@@ -371,22 +369,17 @@ class StatementGenerator:
             for page in reader.pages:
                 writer.add_page(page)
             writer.encrypt(row_info['id'])
-
             with open(full_path, 'wb') as protected_file:
                 writer.write(protected_file)
 
     def rename_pdfs(self):
-        """Rename each generated PDF to the client's name, using the id map built during generation."""
         set_progress(self.temp_id, "processing", "Renaming files...", 95)
-
         for filename in os.listdir(self.output_folder):
             if not filename.endswith(".pdf"):
                 continue
-
             safe_id = self._safe_id_from_filename(filename)
             row_info = self.rows_by_safe_id.get(safe_id) if safe_id else None
             old_path = os.path.join(self.output_folder, filename)
-
             if not row_info:
                 logger.warning(f"Could not match '{filename}' back to a client record; leaving filename as-is.")
                 continue
@@ -394,16 +387,13 @@ class StatementGenerator:
             sanitized_name = re.sub(r'[<>:"/\\|?*]', '_', row_info['name'])
             new_name = f"{sanitized_name}.pdf"
             new_path = os.path.join(self.output_folder, new_name)
-
             if os.path.exists(new_path) and new_path != old_path:
                 base, ext = os.path.splitext(new_name)
                 new_name = f"{base}_{safe_id}{ext}"
                 new_path = os.path.join(self.output_folder, new_name)
-
             shutil.move(old_path, new_path)
 
     def run(self, password_protection=False):
-        """Execute the entire statement generation process."""
         self.validate_template()
         self.generate_documents()
         self.convert_to_pdf()
@@ -420,17 +410,23 @@ class StatementGenerator:
         set_progress(self.temp_id, "completed", "Done - your statements are ready.", 100, warnings=warnings)
 
 
-def run_generation_job(temp_id, client_id, client_label, template_path, data_path, output_folder, password_protection):
-    """Runs in the background thread pool. Always cleans up the source uploads."""
-    try:
+async def run_generation_job(temp_id, client_id, client_label, template_path, data_path, output_folder, password_protection):
+    """The blocking generation work runs in the dedicated executor; the
+    surrounding coroutine handles the async DB update and cleanup."""
+    loop = asyncio.get_running_loop()
+
+    def _run_sync():
         generator = StatementGenerator(template_path, data_path, output_folder, temp_id)
         generator.run(password_protection=password_protection)
-        update_job_status(temp_id, 'completed', client_id)
+
+    try:
+        await loop.run_in_executor(executor, _run_sync)
+        await update_job_status(temp_id, 'completed', client_id)
     except Exception as e:
         set_progress(temp_id, "error", str(e), 0)
         capture_job_failure(e, temp_id=temp_id, client_label=client_label, client_id=client_id)
         try:
-            update_job_status(temp_id, 'error', client_id)
+            await update_job_status(temp_id, 'error', client_id)
         except Exception as db_err:
             logger.error(f"Could not record job error in database for {temp_id}: {db_err}")
     finally:
@@ -443,8 +439,6 @@ def run_generation_job(temp_id, client_id, client_label, template_path, data_pat
 
 
 def count_data_rows(data_path):
-    """Quick, read-only count of non-blank data rows (excludes the header row).
-    Used to enforce max_rows_per_job before a job is even started."""
     workbook = openpyxl.load_workbook(data_path, read_only=True)
     try:
         sheet = workbook.active
@@ -463,42 +457,47 @@ def generate_temp_id():
     return temp_id, expiry_time
 
 
-@generate_stats_bp.route('/health', methods=['GET'])
-def health():
-    """Public, unauthenticated - for uptime monitoring (UptimeRobot, Render's
-    own health checks, etc). Checks the one dependency that actually matters:
-    can we reach the database. A 503 here means clients are about to start
-    seeing errors too, so this is meant to catch that before they report it."""
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
+
+@router.get("/health", response_model=HealthResponse, summary="Service health check")
+async def health():
+    """Public, unauthenticated - for uptime monitoring. Checks the one
+    dependency that actually matters: can we reach the database."""
     try:
-        with get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT 1")
-        return jsonify({"status": "ok"}), 200
+        async with get_connection() as conn:
+            await conn.execute("SELECT 1")
+        return HealthResponse(status="ok")
     except Exception as e:
         capture_service_error(e, where="health_check")
-        return jsonify({"status": "error", "message": "Database unreachable."}), 503
+        raise HTTPException(status_code=503, detail="Database unreachable.")
 
 
-@generate_stats_bp.route('/statement_generator', methods=['GET'])
-def statement_generator():
-    return render_template('generate_statements.html')
+@router.get("/statement_generator", response_class=HTMLResponse, include_in_schema=False)
+async def statement_generator_page(request: Request):
+    return templates.TemplateResponse(request, "generate_statements.html")
 
 
-@generate_stats_bp.route('/terms', methods=['GET'])
-def terms():
-    return render_template('legal_page.html', page_title='Terms of Service', active='terms', last_updated='23 August 2026')
+@router.get("/terms", response_class=HTMLResponse, include_in_schema=False)
+async def terms(request: Request):
+    return templates.TemplateResponse(request, "legal_page.html", {
+        "page_title": "Terms of Service", "active": "terms", "last_updated": "23 August 2026",
+    })
 
 
-@generate_stats_bp.route('/privacy', methods=['GET'])
-def privacy():
-    return render_template('legal_page.html', page_title='Privacy Policy', active='privacy', last_updated='23 August 2026')
+@router.get("/privacy", response_class=HTMLResponse, include_in_schema=False)
+async def privacy(request: Request):
+    return templates.TemplateResponse(request, "legal_page.html", {
+        "page_title": "Privacy Policy", "active": "privacy", "last_updated": "23 August 2026",
+    })
 
 
-@generate_stats_bp.route('/download_examples', methods=['GET'])
-def download_examples():
+@router.get("/download_examples", include_in_schema=False)
+async def download_examples():
     """Public - lets a prospective user see exactly what a working
     template/spreadsheet pair looks like before they need a key."""
-    examples_dir = os.path.join(current_app.root_path, 'static', 'examples')
+    examples_dir = os.path.join(STATIC_DIR, 'examples')
     zip_path = os.path.join(examples_dir, 'example_files.zip')
 
     if not os.path.exists(zip_path):
@@ -506,58 +505,57 @@ def download_examples():
             zipf.write(os.path.join(examples_dir, 'example_template.docx'), 'example_template.docx')
             zipf.write(os.path.join(examples_dir, 'example_data.xlsx'), 'example_data.xlsx')
 
-    return send_file(zip_path, mimetype='application/zip', as_attachment=True, download_name='example_files.zip')
+    return FileResponse(zip_path, media_type='application/zip', filename='example_files.zip')
 
 
-@generate_stats_bp.route('/process_statement', methods=['POST'])
-@require_api_key
-def process_statement():
-    """Kick off statement generation in the background and return immediately."""
-    password_protection = request.form.get('password_protection') == 'on'
-    template_file = request.files.get('template_file')
-    data_file = request.files.get('data_file')
-
-    if not template_file or not template_file.filename:
-        return jsonify({"message": "Please choose a template file (.docx)."}), 400
-    if not data_file or not data_file.filename:
-        return jsonify({"message": "Please choose a data file (.xlsx)."}), 400
+@router.post("/process_statement", response_model=ProcessStatementResponse, status_code=202,
+             summary="Generate personalized PDF statements from a template + spreadsheet")
+async def process_statement(
+    template_file: UploadFile = File(..., description="Word template (.doc/.docx) with {{ field }} placeholders"),
+    data_file: UploadFile = File(..., description="Spreadsheet (.xls/.xlsx) with one row per statement"),
+    password_protection: bool = Form(False, description="Password-protect each PDF with that row's own ID"),
+    client: dict = Depends(require_api_key),
+):
+    """Kicks off statement generation in the background and returns
+    immediately - poll `/progress/{temp_id}` for status, then
+    `/download_statement/{temp_id}` once complete."""
+    if not template_file.filename:
+        raise HTTPException(status_code=400, detail="Please choose a template file (.docx).")
+    if not data_file.filename:
+        raise HTTPException(status_code=400, detail="Please choose a data file (.xlsx).")
     if not allowed_template(template_file.filename):
-        return jsonify({"message": "Template file must be a .doc or .docx file."}), 400
+        raise HTTPException(status_code=400, detail="Template file must be a .doc or .docx file.")
     if not allowed_data_file(data_file.filename):
-        return jsonify({"message": "Data file must be a .xls or .xlsx file."}), 400
-
-    client = g.api_client
+        raise HTTPException(status_code=400, detail="Data file must be a .xls or .xlsx file.")
 
     if password_protection and not client['password_protection_allowed']:
-        return jsonify({
-            "message": "Password protection isn't available on your current plan. Contact us to upgrade."
-        }), 403
+        raise HTTPException(status_code=403, detail="Password protection isn't available on your current plan. Contact us to upgrade.")
 
     if client['monthly_job_limit'] is not None:
         try:
-            used = count_jobs_this_month(client['id'])
+            used = await count_jobs_this_month(client['id'])
         except Exception as e:
             capture_service_error(e, where="process_statement.count_jobs_this_month", client_id=client['id'])
-            return jsonify({"message": "Service temporarily unavailable. Please try again shortly."}), 503
+            raise HTTPException(status_code=503, detail="Service temporarily unavailable. Please try again shortly.")
         if used >= client['monthly_job_limit']:
-            return jsonify({
-                "message": f"Monthly limit of {client['monthly_job_limit']} jobs reached for your plan. "
-                           f"Contact us to upgrade."
-            }), 429
+            raise HTTPException(status_code=429, detail=(
+                f"Monthly limit of {client['monthly_job_limit']} jobs reached for your plan. Contact us to upgrade."
+            ))
 
     temp_id, expiry_time = generate_temp_id()
     output_folder = create_temp_folder(client['id'], temp_id)
     uploads_folder = os.path.join(output_folder, 'src')
     os.makedirs(uploads_folder, exist_ok=True)
 
-    # Save the uploaded files to disk *now*, inside this request, before we
-    # return. Werkzeug's uploaded-file streams aren't guaranteed to stay valid
-    # once the request/response cycle ends, so the background job must work
-    # from real file paths, not from the FileStorage objects themselves.
     template_path = os.path.join(uploads_folder, secure_filename(template_file.filename))
     data_path = os.path.join(uploads_folder, secure_filename(data_file.filename))
-    template_file.save(template_path)
-    data_file.save(data_path)
+
+    # UploadFile.read() is async (unlike Flask's synchronous FileStorage.save()) -
+    # this is one of the real behavioral differences in the port, not just syntax.
+    with open(template_path, 'wb') as f:
+        f.write(await template_file.read())
+    with open(data_path, 'wb') as f:
+        f.write(await data_file.read())
 
     if client['max_rows_per_job'] is not None:
         try:
@@ -565,99 +563,89 @@ def process_statement():
         except Exception as e:
             shutil.rmtree(output_folder, ignore_errors=True)
             logger.warning(f"Could not read data file for row-count check: {e}")
-            return jsonify({"message": "Could not read the data file. Please check it's a valid .xls or .xlsx file."}), 400
+            raise HTTPException(status_code=400, detail="Could not read the data file. Please check it's a valid .xls or .xlsx file.")
 
         if row_count > client['max_rows_per_job']:
             shutil.rmtree(output_folder, ignore_errors=True)
-            return jsonify({
-                "message": f"Your plan allows up to {client['max_rows_per_job']} rows per job "
-                           f"(this file has {row_count}). Contact us to upgrade."
-            }), 400
+            raise HTTPException(status_code=400, detail=(
+                f"Your plan allows up to {client['max_rows_per_job']} rows per job "
+                f"(this file has {row_count}). Contact us to upgrade."
+            ))
     else:
         row_count = None
 
     try:
-        create_job(temp_id, client['id'], row_count=row_count)
+        await create_job(temp_id, client['id'], row_count=row_count)
     except Exception as e:
         shutil.rmtree(output_folder, ignore_errors=True)
         capture_service_error(e, where="process_statement.create_job", client_id=client['id'], temp_id=temp_id)
-        return jsonify({"message": "Service temporarily unavailable. Please try again shortly."}), 503
+        raise HTTPException(status_code=503, detail="Service temporarily unavailable. Please try again shortly.")
 
-    # Tag the job with whoever's key started it, so progress/download checks
-    # below can't be used by a different key to peek at or pull someone
-    # else's files.
     TEMP_DOWNLOADS[temp_id] = {'folder': output_folder, 'expiry': expiry_time, 'owner': client['id']}
     set_progress(temp_id, "processing", "Queued...", 0)
     logger.info(f"Job {temp_id} started by client '{client['label']}' (id={client['id']})")
 
-    executor.submit(run_generation_job, temp_id, client['id'], client['label'], template_path, data_path, output_folder, password_protection)
+    asyncio.create_task(run_generation_job(
+        temp_id, client['id'], client['label'], template_path, data_path, output_folder, password_protection
+    ))
 
-    return jsonify({
-        "temp_id": temp_id,
-        "message": "Processing started.",
-        "status_url": f"/api/progress/{temp_id}",
-        "download_link": f"/api/download_statement/{temp_id}"
-    }), 202
+    return ProcessStatementResponse(
+        temp_id=temp_id,
+        message="Processing started.",
+        status_url=f"/api/progress/{temp_id}",
+        download_link=f"/api/download_statement/{temp_id}",
+    )
 
 
-@generate_stats_bp.route('/progress/<temp_id>', methods=['GET'])
-@require_api_key
-def get_progress(temp_id):
-    """Check the progress of a statement generation task."""
+@router.get("/progress/{temp_id}", response_model=ProgressResponse, summary="Check generation progress")
+async def get_progress(temp_id: str, client: dict = Depends(require_api_key)):
     download_info = TEMP_DOWNLOADS.get(temp_id)
     # Same "unknown" response whether the id never existed or belongs to
     # someone else - this avoids confirming to a caller that a given temp_id
     # exists at all if it isn't theirs.
-    if download_info is None or download_info.get('owner') != g.api_client['id']:
-        return jsonify({"state": "unknown", "message": "Unknown or expired ID.", "progress": 0}), 404
+    if download_info is None or download_info.get('owner') != client['id']:
+        raise HTTPException(status_code=404, detail={"state": "unknown", "message": "Unknown or expired ID.", "progress": 0})
 
-    # Belt-and-suspenders: the folder path we're about to report on must
-    # exactly match what this client's own root would produce for this
-    # temp_id. The ownership check above already guarantees this in normal
-    # operation - this catches the case where it wouldn't (e.g. a TEMP_DOWNLOADS
-    # entry corrupted by a future bug).
     try:
-        expected_folder = _safe_join(_client_root(g.api_client['id']), temp_id)
+        expected_folder = _safe_join(_client_root(client['id']), temp_id)
     except ValueError:
-        return jsonify({"state": "unknown", "message": "Unknown or expired ID.", "progress": 0}), 404
+        raise HTTPException(status_code=404, detail={"state": "unknown", "message": "Unknown or expired ID.", "progress": 0})
     if os.path.realpath(download_info['folder']) != expected_folder:
-        logger.error(f"Folder for {temp_id} is not under client {g.api_client['id']}'s root - refusing to report on it.")
-        return jsonify({"state": "unknown", "message": "Unknown or expired ID.", "progress": 0}), 404
+        logger.error(f"Folder for {temp_id} is not under client {client['id']}'s root - refusing to report on it.")
+        raise HTTPException(status_code=404, detail={"state": "unknown", "message": "Unknown or expired ID.", "progress": 0})
 
     task_status = PROGRESS_STATUS.get(temp_id)
     if task_status is None:
-        return jsonify({"state": "unknown", "message": "Unknown or expired ID.", "progress": 0}), 404
-    return jsonify(task_status)
+        raise HTTPException(status_code=404, detail={"state": "unknown", "message": "Unknown or expired ID.", "progress": 0})
+    return ProgressResponse(**task_status)
 
 
-@generate_stats_bp.route('/download_statement/<temp_id>', methods=['GET'])
-@require_api_key
-def download_all_files(temp_id):
-    """Download all generated PDF files as a zip."""
+@router.get("/download_statement/{temp_id}", summary="Download all generated PDFs as a zip")
+async def download_all_files(temp_id: str, client: dict = Depends(require_api_key)):
     download_info = TEMP_DOWNLOADS.get(temp_id)
-    if download_info is None or download_info.get('owner') != g.api_client['id']:
-        return jsonify({"message": "Invalid or expired download ID."}), 404
+    if download_info is None or download_info.get('owner') != client['id']:
+        raise HTTPException(status_code=404, detail="Invalid or expired download ID.")
 
     try:
-        expected_folder = _safe_join(_client_root(g.api_client['id']), temp_id)
+        expected_folder = _safe_join(_client_root(client['id']), temp_id)
     except ValueError:
-        return jsonify({"message": "Invalid or expired download ID."}), 404
+        raise HTTPException(status_code=404, detail="Invalid or expired download ID.")
     if os.path.realpath(download_info['folder']) != expected_folder:
-        logger.error(f"Folder for {temp_id} is not under client {g.api_client['id']}'s root - refusing to serve it.")
-        return jsonify({"message": "Invalid or expired download ID."}), 404
+        logger.error(f"Folder for {temp_id} is not under client {client['id']}'s root - refusing to serve it.")
+        raise HTTPException(status_code=404, detail="Invalid or expired download ID.")
 
     task_status = PROGRESS_STATUS.get(temp_id)
     if task_status and task_status.get('state') != 'completed':
-        return jsonify({"message": "Files are not ready yet."}), 409
+        raise HTTPException(status_code=409, detail="Files are not ready yet.")
 
     folder_path = download_info['folder']
     if not os.path.exists(folder_path):
-        return jsonify({"message": "Download folder not found."}), 404
+        raise HTTPException(status_code=404, detail="Download folder not found.")
 
     try:
         pdf_files = [f for f in os.listdir(folder_path) if f.endswith('.pdf')]
         if not pdf_files:
-            return jsonify({"message": "No PDF files found to download."}), 404
+            raise HTTPException(status_code=404, detail="No PDF files found to download.")
 
         zip_filename = f"statements_{temp_id}.zip"
         zip_filepath = os.path.join(folder_path, zip_filename)
@@ -666,8 +654,10 @@ def download_all_files(temp_id):
             for pdf in pdf_files:
                 zipf.write(os.path.join(folder_path, pdf), pdf)
 
-        return send_file(zip_filepath, mimetype='application/zip', as_attachment=True, download_name=zip_filename)
+        return FileResponse(zip_filepath, media_type='application/zip', filename=zip_filename)
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error creating zip file for {temp_id}: {e}")
-        return jsonify({"message": f"Error creating download file: {str(e)}"}), 500
+        raise HTTPException(status_code=500, detail=f"Error creating download file: {str(e)}")

@@ -24,10 +24,11 @@ def init_error_tracking(app_env='production'):
 
     try:
         import sentry_sdk
-        from sentry_sdk.integrations.flask import FlaskIntegration
+        from sentry_sdk.integrations.starlette import StarletteIntegration
+        from sentry_sdk.integrations.fastapi import FastApiIntegration
         sentry_sdk.init(
             dsn=dsn,
-            integrations=[FlaskIntegration()],
+            integrations=[StarletteIntegration(), FastApiIntegration()],
             environment=app_env,
             # Full error capture; keep performance-trace sampling low since this
             # app doesn't need request-latency tracing to be useful here.

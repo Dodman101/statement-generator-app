@@ -1,27 +1,56 @@
-# Use an official Python runtime as a parent image
-FROM python:3.10-slim
+# Use an official Python runtime as a parent image - matches the version
+# this app was actually developed and tested against.
+FROM python:3.12-slim
 
-# Install necessary packages
+# System dependencies:
+# - libreoffice / libreoffice-writer / python3-uno / xvfb: docx -> pdf conversion
+# - fonts-liberation: Arial / Times New Roman equivalents (Liberation Sans/Serif)
+# - fonts-crosextra-carlito / fonts-crosextra-caladea: Calibri / Cambria
+#   equivalents. Without these, LibreOffice silently substitutes DejaVu Sans
+#   for any Calibri template (Word's modern default font) - DejaVu Sans is
+#   NOT metric-compatible, so the generated PDF reflows differently (different
+#   line breaks, page breaks) than the template looked in Word. Confirmed by
+#   direct testing - this is a real, previously-fixed bug, not a guess.
+# - gcc / libpq-dev: asyncpg ships prebuilt wheels for most platforms, but if
+#   none matches this exact base image, pip falls back to compiling its C
+#   extension from source, which fails outright without these.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libreoffice \
     libreoffice-writer \
     fonts-liberation \
+    fonts-crosextra-carlito \
+    fonts-crosextra-caladea \
     python3-uno \
     xvfb \
+    gcc \
+    libpq-dev \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 # Set the working directory
 WORKDIR /app
 
+# Install Python dependencies first, separately from the app code, so
+# editing main.py/app/ doesn't invalidate this layer's Docker build cache
+# and force a full pip reinstall on every rebuild.
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
 # Copy project files to the container
 COPY . .
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Render injects $PORT at runtime - the app must bind to whatever value
+# that is, not a hardcoded port. 8000 here is just the documented default
+# for local/manual runs where $PORT isn't set.
+EXPOSE 8000
 
-# Expose the port your application runs on
-EXPOSE 5000
-
-# Command to run your application
-CMD ["python", "run.py"]  # Replace 'app.py' with the entry point of your application
+# Runs the actual ASGI app via uvicorn. `python main.py` would just import
+# the module and exit immediately - main.py has no __main__ block that
+# starts a server, so that CMD would build fine and then do nothing.
+# --workers 1 is required, not a tuning choice: progress/download tracking
+# lives in in-process memory (see app/routes/generate_statements.py) - a
+# second worker process would never see jobs started on the first one.
+# Shell form (not exec-array form) is required here too, specifically so
+# ${PORT:-8000} actually gets expanded - the exec form doesn't invoke a
+# shell and would pass the literal string "$PORT" through unexpanded.
+CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1

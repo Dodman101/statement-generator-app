@@ -20,12 +20,13 @@ Usage:
 Requires DATABASE_URL to be set (same Neon connection string as the app uses).
 """
 import argparse
+import asyncio
 import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from app.db import init_schema, create_api_client  # noqa: E402
+from app.db import init_pool, close_pool, init_schema, create_api_client  # noqa: E402
 
 FREE_DEFAULTS = {
     "monthly_job_limit": 5,
@@ -39,7 +40,7 @@ OTHER_DEFAULTS = {
 }
 
 
-def main():
+async def main():
     parser = argparse.ArgumentParser(description="Issue a new Statement Generator API key.")
     parser.add_argument("label", help="Human-readable name for this client, e.g. 'Acme Corp'")
     parser.add_argument("--plan", default="free", help="Plan name, e.g. free / paid / internal (default: free)")
@@ -61,14 +62,18 @@ def main():
         args.password_protection if args.password_protection is not None else defaults["password_protection_allowed"]
     )
 
-    init_schema()
-    raw_key = create_api_client(
-        args.label,
-        plan=args.plan,
-        monthly_job_limit=monthly_job_limit,
-        max_rows_per_job=max_rows_per_job,
-        password_protection_allowed=password_protection_allowed,
-    )
+    await init_pool()
+    try:
+        await init_schema()
+        raw_key = await create_api_client(
+            args.label,
+            plan=args.plan,
+            monthly_job_limit=monthly_job_limit,
+            max_rows_per_job=max_rows_per_job,
+            password_protection_allowed=password_protection_allowed,
+        )
+    finally:
+        await close_pool()
 
     print(f"\nCreated API client '{args.label}' (plan: {args.plan})")
     print(f"  Monthly job limit:    {monthly_job_limit if monthly_job_limit is not None else 'unlimited'}")
@@ -78,4 +83,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
