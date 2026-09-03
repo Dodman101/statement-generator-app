@@ -123,6 +123,26 @@ async def init_schema() -> None:
         """)
         await conn.execute("ALTER TABLE statement_api_clients ADD COLUMN IF NOT EXISTS max_rows_per_job INTEGER;")
         await conn.execute("ALTER TABLE statement_api_clients ADD COLUMN IF NOT EXISTS password_protection_allowed BOOLEAN NOT NULL DEFAULT FALSE;")
+        # References the SAME users table Vett created (this app shares its
+        # database, per the "one users table across products" decision) -
+        # CREATE TABLE IF NOT EXISTS is a no-op there since it already
+        # exists with these exact columns; it only actually creates
+        # anything if this schema is ever bootstrapped against a fresh,
+        # empty database in isolation (e.g. local dev).
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                email VARCHAR(320) UNIQUE NOT NULL,
+                password_hash VARCHAR(255) NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+        """)
+        # Nullable: existing CLI-issued keys (scripts/create_api_key.py)
+        # have no associated login account and keep working exactly as
+        # before via the X-API-Key header alone. Only self-serve signups
+        # (see app/routes/accounts.py) set this.
+        await conn.execute("ALTER TABLE statement_api_clients ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id);")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_statement_api_clients_user ON statement_api_clients(user_id);")
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS statement_jobs (
                 temp_id UUID PRIMARY KEY,
@@ -190,18 +210,66 @@ async def update_job_status(temp_id: str, status: str, client_id: int) -> None:
 
 async def create_api_client(label: str, plan: str = 'free', monthly_job_limit: int | None = None,
                              max_rows_per_job: int | None = None,
-                             password_protection_allowed: bool = False) -> str:
+                             password_protection_allowed: bool = False,
+                             user_id: str | None = None) -> str:
     """Creates a new client and returns the RAW api key.
 
     The raw key is only ever returned here, at creation time - only its hash
     is stored. If it's lost, the only fix is issuing a new key.
+
+    user_id links this key to a login account (self-serve signup) - omit it
+    (as scripts/create_api_key.py does) for a CLI-issued key with no
+    associated account, which keeps working via X-API-Key exactly as before.
     """
     raw_key = f"sg_live_{secrets.token_urlsafe(32)}"
     async with get_connection() as conn:
         await conn.execute(
             "INSERT INTO statement_api_clients "
-            "(label, key_hash, plan, monthly_job_limit, max_rows_per_job, password_protection_allowed) "
-            "VALUES ($1, $2, $3, $4, $5, $6)",
-            label, hash_key(raw_key), plan, monthly_job_limit, max_rows_per_job, password_protection_allowed,
+            "(label, key_hash, plan, monthly_job_limit, max_rows_per_job, password_protection_allowed, user_id) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            label, hash_key(raw_key), plan, monthly_job_limit, max_rows_per_job, password_protection_allowed, user_id,
         )
     return raw_key
+
+
+# ---------------------------------------------------------------------------
+# User accounts - authenticate against the SAME `users` table Vett uses.
+# ---------------------------------------------------------------------------
+
+async def create_user(email: str, password_hash: str) -> str:
+    """Returns the new user's id. Raises on duplicate email (unique constraint)."""
+    async with get_connection() as conn:
+        row = await conn.fetchrow(
+            "INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id",
+            email.lower().strip(), password_hash,
+        )
+        return str(row["id"])
+
+
+async def get_user_by_email(email: str) -> dict | None:
+    async with get_connection() as conn:
+        row = await conn.fetchrow(
+            "SELECT id, email, password_hash FROM users WHERE email = $1",
+            email.lower().strip(),
+        )
+        return dict(row) if row else None
+
+
+async def get_user_by_id(user_id: str) -> dict | None:
+    async with get_connection() as conn:
+        row = await conn.fetchrow("SELECT id, email FROM users WHERE id = $1", user_id)
+        return dict(row) if row else None
+
+
+async def list_api_clients_for_user(user_id: str) -> list[dict]:
+    """Never returns key_hash or the raw key - only what's safe to show on
+    a dashboard. The raw key is shown exactly once, at creation time."""
+    async with get_connection() as conn:
+        rows = await conn.fetch(
+            "SELECT id, label, plan, monthly_job_limit, max_rows_per_job, "
+            "password_protection_allowed, is_active, created_at "
+            "FROM statement_api_clients WHERE user_id = $1 ORDER BY created_at DESC",
+            user_id,
+        )
+        return [dict(r) for r in rows]
+

@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dashboard — Statement Generator</title>
+<link rel="icon" type="image/svg+xml" href="/static/img/favicon.svg">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,500;0,600;1,500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/statement-generator-theme.css">
+<style>
+  .dash-header{display:flex; justify-content:space-between; align-items:center; padding:24px 0; border-bottom:1px solid var(--paper-line); margin-bottom:32px;}
+  .dash-header .email{color:var(--ink-soft); font-size:13px;}
+  .card{background:#faf9f4; border:1px solid var(--paper-line); padding:24px; margin-bottom:24px; box-shadow:0 1px 3px rgba(0,0,0,.06);}
+  .card h2{font-size:16px; margin:0 0 16px;}
+  table{width:100%; border-collapse:collapse; font-size:13px;}
+  th, td{text-align:left; padding:8px 6px; border-bottom:1px solid var(--paper-line);}
+  th{color:var(--ink-soft); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:.03em;}
+  .badge{display:inline-block; padding:2px 8px; border-radius:2px; font-size:11px; text-transform:uppercase;}
+  .badge-active{background:#e3ede6; color:var(--good);}
+  .badge-inactive{background:#f0ece2; color:var(--ink-soft);}
+  .new-key-box{background:#fbf3e3; border:1.5px solid var(--seal); padding:16px; margin-bottom:24px;}
+  .new-key-box code{display:block; background:#fff; padding:10px; margin:10px 0; word-break:break-all; font-size:13px;}
+  .new-key-box .warn{color:var(--bad); font-size:12px; font-weight:600;}
+  form.inline{display:flex; gap:10px; align-items:flex-end;}
+  form.inline label{font-size:12px; color:var(--ink-soft); display:block; margin-bottom:4px;}
+  form.inline input{padding:9px 10px; border:1px solid var(--paper-line); border-radius:2px; font-size:14px;}
+  .empty{color:var(--ink-soft); font-size:13px; font-style:italic;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="dash-header">
+    <h1 style="margin:0; font-size:20px;">Dashboard</h1>
+    <div>
+      <span class="email">{{ user.email }}</span>
+      &middot;
+      <a href="#" onclick="document.getElementById('logout-form').submit(); return false;">Log out</a>
+      <form id="logout-form" action="/accounts/logout" method="POST" style="display:none;"></form>
+    </div>
+  </div>
+
+  {% if new_key %}
+  <div class="new-key-box">
+    <strong>New API key created: "{{ new_key_label }}"</strong>
+    <code id="new-key-value">{{ new_key }}</code>
+    <p class="warn">Save this now - it will not be shown again.</p>
+  </div>
+  {% endif %}
+
+  <div class="card">
+    <h2>Your API Keys</h2>
+    {% if clients %}
+    <table>
+      <tr><th>Label</th><th>Plan</th><th>Status</th><th>Created</th></tr>
+      {% for c in clients %}
+      <tr>
+        <td>{{ c.label }}</td>
+        <td>{{ c.plan }}</td>
+        <td><span class="badge {{ 'badge-active' if c.is_active else 'badge-inactive' }}">{{ 'active' if c.is_active else 'inactive' }}</span></td>
+        <td>{{ c.created_at.strftime('%d %b %Y') }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}
+    <p class="empty">You don't have any API keys yet - create one below.</p>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2>Create a New Key</h2>
+    <form class="inline" action="/accounts/dashboard/create-key" method="POST">
+      <div>
+        <label for="label">Label</label>
+        <input type="text" id="label" name="label" placeholder="e.g. Production" required>
+      </div>
+      <button type="submit" class="btn btn-primary">Create Key</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>Using Your Key</h2>
+    <p style="font-size:13px;">Send it in the <code>X-API-Key</code> header, or use it on the
+      <a href="/api/statement_generator">generator page</a>. See <a href="/docs">API docs</a> for the full reference.</p>
+  </div>
+</div>
+</body>
+</html>

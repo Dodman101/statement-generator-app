@@ -17,6 +17,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.db import init_pool, close_pool, init_schema
 from app.observability import init_error_tracking
 from app.routes.generate_statements import router as statement_generator_router, templates as sg_templates, STATIC_DIR
+from app.routes.accounts import router as accounts_router
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -102,6 +103,7 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
 
 
 app.include_router(statement_generator_router, prefix="/api")
+app.include_router(accounts_router, prefix="/accounts")
 
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)

@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Log In — Statement Generator</title>
+<link rel="icon" type="image/svg+xml" href="/static/img/favicon.svg">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,500;0,600;1,500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/statement-generator-theme.css">
+<style>
+  .auth-wrap{max-width:400px; margin:80px auto; padding:0 20px;}
+  .card{background:#faf9f4; border:1px solid var(--paper-line); padding:32px; box-shadow:0 1px 3px rgba(0,0,0,.06);}
+  .card h1{font-size:22px; margin:0 0 24px; text-align:center;}
+  label{display:block; font-size:13px; color:var(--ink-soft); margin-bottom:4px;}
+  input{width:100%; padding:10px 12px; margin-bottom:16px; border:1px solid var(--paper-line); border-radius:2px; font-size:15px; background:#fff;}
+  .btn-primary{width:100%; text-align:center;}
+  .alt-link{text-align:center; margin-top:16px; font-size:13px;}
+  #form-error{display:none; background:#f7e6e2; border:1px solid var(--bad); color:var(--bad); padding:10px 12px; font-size:13px; margin-bottom:16px;}
+</style>
+</head>
+<body>
+<div class="auth-wrap">
+  <div class="card">
+    <h1>Log In</h1>
+    <div id="form-error"></div>
+    <form id="login-form">
+      <label for="email">Email</label>
+      <input type="email" id="email" name="email" required>
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" required>
+      <button type="submit" class="btn btn-primary">Log In</button>
+    </form>
+    <p class="alt-link">Don't have an account? <a href="/accounts/signup">Sign up</a></p>
+  </div>
+</div>
+<script>
+  document.getElementById('login-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const errorBox = document.getElementById('form-error');
+    errorBox.style.display = 'none';
+    const formData = new FormData(e.target);
+    const resp = await fetch('/accounts/login', { method: 'POST', body: formData });
+    if (resp.ok) {
+      window.location.href = '/accounts/dashboard';
+      return;
+    }
+    const data = await resp.json().catch(() => ({}));
+    errorBox.textContent = data.message || 'Login failed. Please try again.';
+    errorBox.style.display = 'block';
+  });
+</script>
+</body>
+</html>
