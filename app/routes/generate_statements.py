@@ -8,12 +8,19 @@ of that actually non-blocking, since LibreOffice itself is a subprocess, not
 an async-aware library. Instead, run_generation_job() is a coroutine that
 hands the blocking work to a dedicated ThreadPoolExecutor via
 loop.run_in_executor(), then awaits the (now-async) database update once
-that returns. This keeps the "at most 5 concurrent conversions" concurrency
-limit from the original design, while letting the DB calls use asyncpg
-properly instead of blocking the event loop.
+that returns. This keeps the "at most MAX_CONCURRENT_JOBS concurrent jobs"
+concurrency limit from the original design, while letting the DB calls use
+asyncpg properly instead of blocking the event loop.
+
+Memory: nothing here is unbounded per se, but a few things scale with job
+size/concurrency and are worth knowing about if RSS climbs under load -
+see the comments by MAX_CONCURRENT_JOBS, LIBREOFFICE_CONCURRENCY, and
+_release_memory_to_os() below for the specifics and the fixes in place.
 """
 import os
 import re
+import gc
+import ctypes
 import shutil
 import subprocess
 import platform
@@ -22,7 +29,7 @@ import uuid
 import zipfile
 import asyncio
 from datetime import datetime, timedelta
-from threading import Event, Thread
+from threading import Event, Thread, Semaphore
 from concurrent.futures import ThreadPoolExecutor
 
 import openpyxl
@@ -62,11 +69,52 @@ PROGRESS_STATUS = {}
 
 CONVERSION_BATCH_SIZE = 15
 
+# How many full jobs (docx generation + PDF conversion + password
+# protection) can run at once. Configurable via env var so it can be tuned
+# down on a small Render instance without a redeploy.
+MAX_CONCURRENT_JOBS = int(os.environ.get("MAX_CONCURRENT_JOBS", "3"))
+
+# LibreOffice is the real memory hog here, not our own Python code - each
+# `soffice --headless` invocation can hold 150-300MB+ RSS on its own. The
+# ThreadPoolExecutor below caps how many *jobs* run at once, but every one
+# of those jobs still calls into LibreOffice independently, so at
+# MAX_CONCURRENT_JOBS=3 you could still get 3 soffice processes launching in
+# the same instant. This semaphore caps concurrent LibreOffice subprocesses
+# specifically, separate from (and normally tighter than) job concurrency,
+# so conversions from different jobs queue up instead of all running at once.
+LIBREOFFICE_CONCURRENCY = int(os.environ.get("LIBREOFFICE_CONCURRENCY", "2"))
+libreoffice_semaphore = Semaphore(LIBREOFFICE_CONCURRENCY)
+
 # Dedicated thread pool for the blocking generation work (LibreOffice +
 # docxtpl). Separate from FastAPI/uvicorn's own thread pool so job
 # concurrency is a deliberate, bounded number, not whatever uvicorn happens
 # to be running.
-executor = ThreadPoolExecutor(max_workers=5)
+executor = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_JOBS)
+
+
+def _release_memory_to_os():
+    """Force Python to reclaim garbage and, on Linux, actually hand freed
+    heap memory back to the OS.
+
+    CPython's allocator (and glibc's malloc arenas underneath it) will
+    happily hold onto memory that's been freed rather than returning it -
+    this is normal behavior, not a leak, but across a long-running worker
+    process that repeatedly creates and discards big short-lived objects
+    (one DocxTemplate/openpyxl/PdfReader per statement, over and over) it's
+    exactly what makes RSS climb during a big job and never come back down
+    afterwards. gc.collect() clears any reference cycles (lxml, which
+    docxtpl/python-docx sit on top of, is a common source of these) so
+    CPython's refcounting alone won't free them promptly; malloc_trim(0)
+    then asks glibc to actually release the freed arenas back to the OS
+    instead of keeping them reserved for next time. Call this after each
+    memory-heavy phase of a job, not on every row - it has real cost.
+    """
+    gc.collect()
+    if platform.system() == 'Linux':
+        try:
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -185,7 +233,11 @@ class StatementGenerator:
         self.data_path = data_path
         self.output_folder = output_folder
         self.temp_id = temp_id
-        self.workbook = openpyxl.load_workbook(data_path)
+        # read_only streams rows from the XML instead of materializing every
+        # cell in memory up front - for a data file with a few thousand rows
+        # that's the difference between a small, constant footprint and one
+        # that scales with file size before a single statement is generated.
+        self.workbook = openpyxl.load_workbook(data_path, read_only=True, data_only=True)
         self.sheet = self.workbook.active
         self.header_row = next(self.sheet.iter_rows(values_only=True))
         self.individual_letters = []
@@ -301,6 +353,23 @@ class StatementGenerator:
             progress_percent = int((index / total_rows) * 35) + 5
             set_progress(self.temp_id, "processing", f"Generating document {index}/{total_rows}...", progress_percent)
 
+            # DocxTemplate/lxml objects can form reference cycles that
+            # refcounting alone won't clean up promptly, so on a job with
+            # thousands of rows, memory can climb steadily through this loop
+            # even though each `template` is discarded every iteration.
+            # Nudge the collector periodically rather than on every row.
+            if index % 200 == 0:
+                gc.collect()
+
+        # The workbook has done its job (every row has been read into a
+        # generated .docx) - drop it now instead of holding it for the rest
+        # of the run, which still has PDF conversion and password
+        # protection ahead of it.
+        self.workbook.close()
+        self.workbook = None
+        self.sheet = None
+        _release_memory_to_os()
+
         set_progress(self.temp_id, "processing", "Document generation complete.", 40)
 
     def convert_to_pdf(self):
@@ -324,12 +393,17 @@ class StatementGenerator:
             for batch in batches:
                 cmd = [self.libreoffice_path, '--headless', user_installation_arg, '--convert-to', 'pdf',
                        '--outdir', self.output_folder] + batch
-                try:
-                    subprocess.run(cmd, env=env, check=True, capture_output=True, timeout=180)
-                except subprocess.CalledProcessError as e:
-                    raise RuntimeError(f"PDF conversion failed: {e.stderr.decode(errors='ignore')}")
-                except subprocess.TimeoutExpired:
-                    raise RuntimeError("PDF conversion timed out. Try again with a smaller batch of statements.")
+                # Only LIBREOFFICE_CONCURRENCY of these run at once across
+                # ALL jobs in this process, regardless of how many jobs the
+                # thread pool is otherwise running - see the comment by the
+                # semaphore's definition.
+                with libreoffice_semaphore:
+                    try:
+                        subprocess.run(cmd, env=env, check=True, capture_output=True, timeout=180)
+                    except subprocess.CalledProcessError as e:
+                        raise RuntimeError(f"PDF conversion failed: {e.stderr.decode(errors='ignore')}")
+                    except subprocess.TimeoutExpired:
+                        raise RuntimeError("PDF conversion timed out. Try again with a smaller batch of statements.")
 
                 for letter_file in batch:
                     expected_pdf = os.path.splitext(letter_file)[0] + '.pdf'
@@ -342,6 +416,7 @@ class StatementGenerator:
                 set_progress(self.temp_id, "processing", f"Converting to PDF ({converted}/{total})...", progress_percent)
         finally:
             shutil.rmtree(profile_dir, ignore_errors=True)
+            _release_memory_to_os()
 
     def _safe_id_from_filename(self, filename):
         if filename.startswith("output_") and filename.endswith(".pdf"):
@@ -350,7 +425,7 @@ class StatementGenerator:
 
     def apply_password_protection(self):
         set_progress(self.temp_id, "processing", "Applying password protection...", 88)
-        for filename in os.listdir(self.output_folder):
+        for count, filename in enumerate(os.listdir(self.output_folder), start=1):
             if not filename.endswith(".pdf"):
                 continue
             safe_id = self._safe_id_from_filename(filename)
@@ -371,6 +446,9 @@ class StatementGenerator:
             writer.encrypt(row_info['id'])
             with open(full_path, 'wb') as protected_file:
                 writer.write(protected_file)
+
+            if count % 200 == 0:
+                gc.collect()
 
     def rename_pdfs(self):
         set_progress(self.temp_id, "processing", "Renaming files...", 95)
@@ -408,6 +486,9 @@ class StatementGenerator:
                 for name in self.unprotected_names
             ]
         set_progress(self.temp_id, "completed", "Done - your statements are ready.", 100, warnings=warnings)
+        # Last chance to hand this job's memory back to the OS before the
+        # worker thread picks up (or waits for) the next one.
+        _release_memory_to_os()
 
 
 async def run_generation_job(temp_id, client_id, client_label, template_path, data_path, output_folder, password_protection):
