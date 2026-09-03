@@ -68,7 +68,12 @@ ALLOWED_DATA_EXTENSIONS = {'xlsx', 'xls'}
 TEMP_DOWNLOADS = {}
 PROGRESS_STATUS = {}
 
-CONVERSION_BATCH_SIZE = 15
+CONVERSION_BATCH_TARGET_BYTES = int(os.environ.get(
+    "CONVERSION_BATCH_TARGET_BYTES", str(8 * 1024 * 1024)))  # ~8MB of generated .docx per LibreOffice call
+# Hard ceiling on doc count per batch regardless of size, so a template
+# that renders to tiny files doesn't produce a single 2000-file command
+# line. Hard floor is implicitly 1 - see _AdaptiveBatcher below.
+CONVERSION_MAX_BATCH_SIZE = int(os.environ.get("CONVERSION_MAX_BATCH_SIZE", "30"))
 
 # How many full jobs (docx generation + PDF conversion + password
 # protection) can run at once. Configurable via env var so it can be tuned
@@ -314,7 +319,6 @@ class StatementGenerator:
         self.workbook = openpyxl.load_workbook(data_path, read_only=True, data_only=True)
         self.sheet = self.workbook.active
         self.header_row = next(self.sheet.iter_rows(values_only=True))
-        self.individual_letters = []
         self.rows_by_safe_id = {}
         self.unprotected_names = []
         self.libreoffice_path = self._get_libreoffice_path()
@@ -379,75 +383,34 @@ class StatementGenerator:
         if missing_fields:
             raise ValueError(f"Template fields not found in Excel headers: {', '.join(sorted(missing_fields))}")
 
-    def generate_documents(self):
-        set_progress(self.temp_id, "processing", "Generating documents...", 5)
+    def generate_and_convert(self):
+        """Generate each statement's .docx and convert it to PDF in
+        batches, interleaved row-by-row instead of generating every
+        document up front and only then converting.
+
+        Previously all N documents were written to disk before conversion
+        started at all, so a job's peak disk usage scaled with its total
+        row count - for a couple thousand rows with a heavy template
+        (embedded images, big tables) that could add up to gigabytes of
+        ephemeral disk before a single PDF existed. Flushing a batch to
+        LibreOffice as soon as it's ready bounds peak disk usage to
+        roughly one batch's worth of documents, regardless of job size.
+
+        Batch size is adaptive by *size*, not row count: rows accumulate
+        into a batch until either their generated .docx bytes reach
+        CONVERSION_BATCH_TARGET_BYTES or the count hits
+        CONVERSION_MAX_BATCH_SIZE, whichever comes first. A simple
+        template produces small .docx files and gets bigger batches
+        (fewer, faster LibreOffice invocations); a complex template with
+        embedded images produces bigger files and gets smaller batches
+        automatically, which keeps any single LibreOffice call less
+        likely to run long enough to hit its timeout.
+        """
+        set_progress(self.temp_id, "processing", "Generating and converting statements...", 5)
         total_rows = max(self.sheet.max_row - 1, 0)
         if total_rows == 0:
             raise ValueError("The data file has no data rows below the header.")
 
-        for index, row in enumerate(self.sheet.iter_rows(min_row=2, values_only=True), start=1):
-            if not row or all(v is None for v in row):
-                continue
-
-            client_id = row[self.id_column_index]
-            client_name = row[self.name_column_index]
-            if client_name is None or str(client_name).strip() == '':
-                raise ValueError(f"Row {index + 1} is missing a value in the name column.")
-
-            id_missing = client_id is None or str(client_id).strip() == ''
-            if id_missing:
-                name_part = re.sub(r'[^a-zA-Z0-9_-]', '_', str(client_name).strip())[:30]
-                safe_id = f"row{index}_{name_part}"
-            else:
-                safe_id = re.sub(r'[^a-zA-Z0-9_-]', '_', str(client_id).strip())
-
-            if safe_id in self.rows_by_safe_id:
-                safe_id = f"{safe_id}_{index}"
-
-            self.rows_by_safe_id[safe_id] = {
-                "id": None if id_missing else str(client_id).strip(),
-                "name": str(client_name).strip(),
-                "id_missing": id_missing,
-            }
-
-            template = DocxTemplate(self.template_path)
-            context = {
-                header.strip().replace(' ', '_'): self.format_number(value)
-                for header, value in zip(self.header_row, row) if header
-            }
-
-            output_path = os.path.join(self.output_folder, f"output_{safe_id}.docx")
-            try:
-                template.render(context)
-                template.save(output_path)
-            except Exception as e:
-                raise RuntimeError(f"Failed to generate document for row {index + 1} ({client_name}): {e}")
-
-            self.individual_letters.append(output_path)
-            progress_percent = int((index / total_rows) * 35) + 5
-            set_progress(self.temp_id, "processing", f"Generating document {index}/{total_rows}...", progress_percent)
-
-            # DocxTemplate/lxml objects can form reference cycles that
-            # refcounting alone won't clean up promptly, so on a job with
-            # thousands of rows, memory can climb steadily through this loop
-            # even though each `template` is discarded every iteration.
-            # Nudge the collector periodically rather than on every row.
-            if index % 200 == 0:
-                gc.collect()
-
-        # The workbook has done its job (every row has been read into a
-        # generated .docx) - drop it now instead of holding it for the rest
-        # of the run, which still has PDF conversion and password
-        # protection ahead of it.
-        self.workbook.close()
-        self.workbook = None
-        self.sheet = None
-        _release_memory_to_os()
-        _log_memory(self.temp_id, "document generation")
-
-        set_progress(self.temp_id, "processing", "Document generation complete.", 40)
-
-    def convert_to_pdf(self):
         if not self.libreoffice_path:
             raise RuntimeError("LibreOffice not found on the server. Install it with: sudo apt-get install libreoffice")
 
@@ -459,35 +422,106 @@ class StatementGenerator:
         os.makedirs(profile_dir, exist_ok=True)
         user_installation_arg = f'-env:UserInstallation=file://{profile_dir}'
 
-        total = len(self.individual_letters)
-        batches = [self.individual_letters[i:i + CONVERSION_BATCH_SIZE]
-                   for i in range(0, total, CONVERSION_BATCH_SIZE)]
+        current_batch = []
+        current_batch_bytes = 0
+        processed = 0
 
-        converted = 0
+        def flush_batch():
+            nonlocal current_batch, current_batch_bytes
+            if not current_batch:
+                return
+            cmd = [self.libreoffice_path, '--headless', user_installation_arg, '--convert-to', 'pdf',
+                   '--outdir', self.output_folder] + current_batch
+            # Only LIBREOFFICE_CONCURRENCY of these run at once across ALL
+            # jobs in this process, regardless of how many jobs the thread
+            # pool is otherwise running - see the comment by the
+            # semaphore's definition.
+            with libreoffice_semaphore:
+                self._run_libreoffice(cmd, env)
+
+            for letter_file in current_batch:
+                expected_pdf = os.path.splitext(letter_file)[0] + '.pdf'
+                if not os.path.exists(expected_pdf):
+                    raise RuntimeError(f"PDF was not created for {os.path.basename(letter_file)}.")
+                os.remove(letter_file)
+
+            current_batch = []
+            current_batch_bytes = 0
+
         try:
-            for batch in batches:
-                cmd = [self.libreoffice_path, '--headless', user_installation_arg, '--convert-to', 'pdf',
-                       '--outdir', self.output_folder] + batch
-                # Only LIBREOFFICE_CONCURRENCY of these run at once across
-                # ALL jobs in this process, regardless of how many jobs the
-                # thread pool is otherwise running - see the comment by the
-                # semaphore's definition.
-                with libreoffice_semaphore:
-                    self._run_libreoffice(cmd, env)
+            for index, row in enumerate(self.sheet.iter_rows(min_row=2, values_only=True), start=1):
+                if not row or all(v is None for v in row):
+                    continue
 
-                for letter_file in batch:
-                    expected_pdf = os.path.splitext(letter_file)[0] + '.pdf'
-                    if not os.path.exists(expected_pdf):
-                        raise RuntimeError(f"PDF was not created for {os.path.basename(letter_file)}.")
-                    os.remove(letter_file)
+                client_id = row[self.id_column_index]
+                client_name = row[self.name_column_index]
+                if client_name is None or str(client_name).strip() == '':
+                    raise ValueError(f"Row {index + 1} is missing a value in the name column.")
 
-                converted += len(batch)
-                progress_percent = int((converted / total) * 40) + 40
-                set_progress(self.temp_id, "processing", f"Converting to PDF ({converted}/{total})...", progress_percent)
+                id_missing = client_id is None or str(client_id).strip() == ''
+                if id_missing:
+                    name_part = re.sub(r'[^a-zA-Z0-9_-]', '_', str(client_name).strip())[:30]
+                    safe_id = f"row{index}_{name_part}"
+                else:
+                    safe_id = re.sub(r'[^a-zA-Z0-9_-]', '_', str(client_id).strip())
+
+                if safe_id in self.rows_by_safe_id:
+                    safe_id = f"{safe_id}_{index}"
+
+                self.rows_by_safe_id[safe_id] = {
+                    "id": None if id_missing else str(client_id).strip(),
+                    "name": str(client_name).strip(),
+                    "id_missing": id_missing,
+                }
+
+                template = DocxTemplate(self.template_path)
+                context = {
+                    header.strip().replace(' ', '_'): self.format_number(value)
+                    for header, value in zip(self.header_row, row) if header
+                }
+
+                output_path = os.path.join(self.output_folder, f"output_{safe_id}.docx")
+                try:
+                    template.render(context)
+                    template.save(output_path)
+                except Exception as e:
+                    raise RuntimeError(f"Failed to generate document for row {index + 1} ({client_name}): {e}")
+
+                current_batch.append(output_path)
+                current_batch_bytes += os.path.getsize(output_path)
+                processed += 1
+
+                if (current_batch_bytes >= CONVERSION_BATCH_TARGET_BYTES
+                        or len(current_batch) >= CONVERSION_MAX_BATCH_SIZE):
+                    flush_batch()
+
+                # 5-80% of the progress bar covers this combined phase now
+                # that generation and conversion happen together per batch.
+                progress_percent = int((processed / total_rows) * 75) + 5
+                set_progress(self.temp_id, "processing", f"Processing statement {processed}/{total_rows}...", progress_percent)
+
+                # DocxTemplate/lxml objects can form reference cycles that
+                # refcounting alone won't clean up promptly, so on a job
+                # with thousands of rows, memory can climb steadily through
+                # this loop even though each `template` is discarded every
+                # iteration. Nudge the collector periodically, not per row.
+                if processed % 200 == 0:
+                    gc.collect()
+
+            flush_batch()  # whatever's left under the size/count threshold
         finally:
             shutil.rmtree(profile_dir, ignore_errors=True)
+            # The workbook has done its job (every row has been read and
+            # turned into a PDF) - drop it now instead of holding it for
+            # the rest of the run, which still has password protection
+            # ahead of it.
+            self.workbook.close()
+            self.workbook = None
+            self.sheet = None
             _release_memory_to_os()
-            _log_memory(self.temp_id, "PDF conversion")
+            _log_memory(self.temp_id, "generate+convert")
+
+        set_progress(self.temp_id, "processing", "Documents generated and converted.", 80)
 
     def _run_libreoffice(self, cmd, env):
         """Run one LibreOffice conversion batch, making sure that if it
@@ -595,8 +629,7 @@ class StatementGenerator:
     def run(self, password_protection=False):
         _log_memory(self.temp_id, "job start")
         self.validate_template()
-        self.generate_documents()
-        self.convert_to_pdf()
+        self.generate_and_convert()
         if password_protection:
             self.apply_password_protection()
         self.rename_pdfs()
