@@ -21,6 +21,7 @@ import os
 import re
 import gc
 import ctypes
+import signal
 import shutil
 import subprocess
 import platform
@@ -117,6 +118,75 @@ def _release_memory_to_os():
             pass
 
 
+def _current_rss_mb():
+    """Current resident memory of this whole process, in MB.
+
+    Reads /proc/self/status rather than resource.getrusage().ru_maxrss,
+    which is a high-water mark that only ever goes up - it can't tell you
+    whether a given phase actually released memory afterward. Returns None
+    off Linux or if /proc isn't readable (e.g. sandboxed environments).
+    """
+    try:
+        with open('/proc/self/status') as f:
+            for line in f:
+                if line.startswith('VmRSS:'):
+                    return int(line.split()[1]) / 1024  # kB -> MB
+    except Exception:
+        return None
+    return None
+
+
+def _log_memory(temp_id, stage):
+    """Log this process's current memory next to a job/stage label, so a
+    Render log search for a temp_id shows exactly which phase memory grew
+    or shrank at - actual numbers instead of the earlier guesswork."""
+    rss = _current_rss_mb()
+    if rss is not None:
+        logger.info(f"[{temp_id}] memory after {stage}: {rss:.1f} MB RSS")
+
+
+def _reap_orphaned_libreoffice_processes():
+    """Safety net: kill any soffice/soffice.bin process still running for a
+    job this process no longer has any record of (completed, errored, or
+    never fully tracked).
+
+    Under normal operation, _kill_libreoffice_process_group() below should
+    prevent orphans from ever existing - but this catches anything that
+    slips through it (a hard crash, an OOM-killer that took the wrapper but
+    missed a forked child, a deploy that restarted mid-job) before it can
+    pile up and eat memory or contend with new conversions for resources.
+    Runs on the same interval as cleanup_expired_downloads().
+    """
+    if platform.system() != 'Linux':
+        return
+    try:
+        for pid_entry in os.listdir('/proc'):
+            if not pid_entry.isdigit():
+                continue
+            try:
+                with open(f'/proc/{pid_entry}/cmdline', 'rb') as f:
+                    cmdline = f.read().decode(errors='ignore')
+            except (FileNotFoundError, ProcessLookupError, PermissionError):
+                continue
+            if 'soffice' not in cmdline or 'lo_profiles' not in cmdline:
+                continue
+            match = re.search(r'lo_profiles/([0-9a-fA-F-]{36})', cmdline)
+            if not match:
+                continue
+            temp_id = match.group(1)
+            if temp_id in TEMP_DOWNLOADS:
+                continue  # job still tracked/active - leave it running
+            try:
+                pid = int(pid_entry)
+                pgid = os.getpgid(pid)
+                os.killpg(pgid, signal.SIGKILL)
+                logger.warning(f"Reaped orphaned LibreOffice process (pid={pid}) for untracked job {temp_id}")
+            except (ProcessLookupError, PermissionError):
+                pass
+    except Exception as e:
+        logger.error(f"Error while reaping orphaned LibreOffice processes: {e}")
+
+
 # ---------------------------------------------------------------------------
 # Response models - so /docs shows real schemas, not untyped dicts.
 # ---------------------------------------------------------------------------
@@ -205,7 +275,11 @@ cleanup_stop_event = Event()
 def schedule_cleanup():
     while not cleanup_stop_event.is_set():
         cleanup_expired_downloads()
-        cleanup_stop_event.wait(600)
+        _reap_orphaned_libreoffice_processes()
+        # Shorter interval than before (was 600s) - the reaper is the
+        # safety net for orphaned LibreOffice processes, and those cost
+        # real memory for every minute they're left running.
+        cleanup_stop_event.wait(120)
 
 
 # Plain daemon thread, not asyncio - this loop doesn't touch the DB or need
@@ -369,6 +443,7 @@ class StatementGenerator:
         self.workbook = None
         self.sheet = None
         _release_memory_to_os()
+        _log_memory(self.temp_id, "document generation")
 
         set_progress(self.temp_id, "processing", "Document generation complete.", 40)
 
@@ -398,12 +473,7 @@ class StatementGenerator:
                 # thread pool is otherwise running - see the comment by the
                 # semaphore's definition.
                 with libreoffice_semaphore:
-                    try:
-                        subprocess.run(cmd, env=env, check=True, capture_output=True, timeout=180)
-                    except subprocess.CalledProcessError as e:
-                        raise RuntimeError(f"PDF conversion failed: {e.stderr.decode(errors='ignore')}")
-                    except subprocess.TimeoutExpired:
-                        raise RuntimeError("PDF conversion timed out. Try again with a smaller batch of statements.")
+                    self._run_libreoffice(cmd, env)
 
                 for letter_file in batch:
                     expected_pdf = os.path.splitext(letter_file)[0] + '.pdf'
@@ -417,6 +487,55 @@ class StatementGenerator:
         finally:
             shutil.rmtree(profile_dir, ignore_errors=True)
             _release_memory_to_os()
+            _log_memory(self.temp_id, "PDF conversion")
+
+    def _run_libreoffice(self, cmd, env):
+        """Run one LibreOffice conversion batch, making sure that if it
+        times out (or fails) we kill LibreOffice's *entire* process tree -
+        not just the one PID we launched.
+
+        `soffice` is a wrapper that forks the real worker, `soffice.bin`.
+        subprocess.run(..., timeout=...) only ever signals the PID it
+        started, so on timeout the wrapper dies but soffice.bin - the
+        process actually holding the memory - is orphaned and keeps
+        running. That's a likely cause of both symptoms seen in
+        production: orphaned soffice.bin processes accumulate and eat
+        memory over time, and once several are alive, new conversions have
+        to contend with them for memory/CPU, which shows up as exactly the
+        kind of timeout that was hit here - even on a small first batch.
+
+        Starting the process in its own session (start_new_session=True)
+        puts the wrapper and everything it forks into one process group,
+        so on timeout or failure we can reliably kill the whole group with
+        a single signal instead of leaving children behind.
+        """
+        proc = subprocess.Popen(
+            cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        try:
+            _, stderr = proc.communicate(timeout=180)
+        except subprocess.TimeoutExpired:
+            self._kill_libreoffice_process_group(proc)
+            raise RuntimeError("PDF conversion timed out. Try again with a smaller batch of statements.")
+
+        if proc.returncode != 0:
+            self._kill_libreoffice_process_group(proc)  # in case it left children behind
+            raise RuntimeError(f"PDF conversion failed: {stderr.decode(errors='ignore')}")
+
+    @staticmethod
+    def _kill_libreoffice_process_group(proc):
+        try:
+            pgid = os.getpgid(proc.pid)
+            os.killpg(pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass  # already gone
+        except Exception as e:
+            logger.warning(f"Could not clean up LibreOffice process group for pid {proc.pid}: {e}")
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            pass
 
     def _safe_id_from_filename(self, filename):
         if filename.startswith("output_") and filename.endswith(".pdf"):
@@ -450,6 +569,8 @@ class StatementGenerator:
             if count % 200 == 0:
                 gc.collect()
 
+        _log_memory(self.temp_id, "password protection")
+
     def rename_pdfs(self):
         set_progress(self.temp_id, "processing", "Renaming files...", 95)
         for filename in os.listdir(self.output_folder):
@@ -472,6 +593,7 @@ class StatementGenerator:
             shutil.move(old_path, new_path)
 
     def run(self, password_protection=False):
+        _log_memory(self.temp_id, "job start")
         self.validate_template()
         self.generate_documents()
         self.convert_to_pdf()
@@ -489,6 +611,7 @@ class StatementGenerator:
         # Last chance to hand this job's memory back to the OS before the
         # worker thread picks up (or waits for) the next one.
         _release_memory_to_os()
+        _log_memory(self.temp_id, "job end")
 
 
 async def run_generation_job(temp_id, client_id, client_label, template_path, data_path, output_folder, password_protection):
@@ -505,6 +628,8 @@ async def run_generation_job(temp_id, client_id, client_label, template_path, da
         await update_job_status(temp_id, 'completed', client_id)
     except Exception as e:
         set_progress(temp_id, "error", str(e), 0)
+        _release_memory_to_os()
+        _log_memory(temp_id, f"job error ({e.__class__.__name__})")
         capture_job_failure(e, temp_id=temp_id, client_label=client_label, client_id=client_id)
         try:
             await update_job_status(temp_id, 'error', client_id)
