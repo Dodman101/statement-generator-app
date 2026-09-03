@@ -74,6 +74,19 @@ CONVERSION_BATCH_TARGET_BYTES = int(os.environ.get(
 # that renders to tiny files doesn't produce a single 2000-file command
 # line. Hard floor is implicitly 1 - see _AdaptiveBatcher below.
 CONVERSION_MAX_BATCH_SIZE = int(os.environ.get("CONVERSION_MAX_BATCH_SIZE", "30"))
+# How many times a failing batch is retried, at its original size, before
+# we give up on it as a whole and start bisecting to isolate the bad
+# file(s) - see StatementGenerator._convert_with_retries.
+BATCH_MAX_RETRIES = int(os.environ.get("CONVERSION_BATCH_MAX_RETRIES", "2"))
+# After this many *top-level* batches in a row fail completely (all
+# retries exhausted at their original size, before any bisection), stop
+# retrying/bisecting further and abort the job instead. Several unrelated
+# batches failing outright in a row is a much stronger signal of a
+# systemic problem - LibreOffice unhealthy, disk full, the environment
+# itself broken - than of several unrelated bad documents, and grinding
+# through retries-then-bisection for every remaining batch would just
+# multiply timeouts without ever succeeding.
+CIRCUIT_BREAKER_THRESHOLD = int(os.environ.get("CONVERSION_CIRCUIT_BREAKER_THRESHOLD", "2"))
 
 # How many full jobs (docx generation + PDF conversion + password
 # protection) can run at once. Configurable via env var so it can be tuned
@@ -321,6 +334,9 @@ class StatementGenerator:
         self.header_row = next(self.sheet.iter_rows(values_only=True))
         self.rows_by_safe_id = {}
         self.unprotected_names = []
+        self.failed_statements = []
+        self.consecutive_batch_failures = 0
+        self._last_batch_error = None
         self.libreoffice_path = self._get_libreoffice_path()
 
         self.id_column_index = self._find_column(self.ID_HEADER_NAMES)
@@ -430,21 +446,10 @@ class StatementGenerator:
             nonlocal current_batch, current_batch_bytes
             if not current_batch:
                 return
-            cmd = [self.libreoffice_path, '--headless', user_installation_arg, '--convert-to', 'pdf',
-                   '--outdir', self.output_folder] + current_batch
-            # Only LIBREOFFICE_CONCURRENCY of these run at once across ALL
-            # jobs in this process, regardless of how many jobs the thread
-            # pool is otherwise running - see the comment by the
-            # semaphore's definition.
-            with libreoffice_semaphore:
-                self._run_libreoffice(cmd, env)
-
-            for letter_file in current_batch:
-                expected_pdf = os.path.splitext(letter_file)[0] + '.pdf'
-                if not os.path.exists(expected_pdf):
-                    raise RuntimeError(f"PDF was not created for {os.path.basename(letter_file)}.")
-                os.remove(letter_file)
-
+            # Handles its own retries and, on persistent failure, isolates
+            # and skips the specific bad file(s) instead of raising - see
+            # _convert_with_retries for the policy.
+            self._convert_with_retries(current_batch, env, user_installation_arg)
             current_batch = []
             current_batch_bytes = 0
 
@@ -523,6 +528,99 @@ class StatementGenerator:
 
         set_progress(self.temp_id, "processing", "Documents generated and converted.", 80)
 
+    def _try_convert_batch(self, batch, env, user_installation_arg):
+        """Attempt to convert `batch` at its current size, retrying
+        transient failures up to BATCH_MAX_RETRIES times. Returns True and
+        removes the source .docx files on success. Returns False (leaving
+        the source files in place for the caller to bisect or clean up) if
+        every attempt at this size failed; the failure is stashed on
+        self._last_batch_error for the caller to report.
+        """
+        cmd = [self.libreoffice_path, '--headless', user_installation_arg, '--convert-to', 'pdf',
+               '--outdir', self.output_folder] + batch
+
+        for attempt in range(1, BATCH_MAX_RETRIES + 2):  # +1 for the initial try
+            try:
+                # Only LIBREOFFICE_CONCURRENCY of these run at once across
+                # ALL jobs in this process, regardless of how many jobs the
+                # thread pool is otherwise running - see the comment by the
+                # semaphore's definition.
+                with libreoffice_semaphore:
+                    self._run_libreoffice(cmd, env)
+
+                missing = [f for f in batch if not os.path.exists(os.path.splitext(f)[0] + '.pdf')]
+                if missing:
+                    raise RuntimeError(
+                        f"PDF was not created for {', '.join(os.path.basename(m) for m in missing)}.")
+
+                for letter_file in batch:
+                    os.remove(letter_file)
+                return True
+            except RuntimeError as e:
+                self._last_batch_error = e
+                logger.warning(
+                    f"[{self.temp_id}] batch of {len(batch)} document(s) failed "
+                    f"(attempt {attempt}/{BATCH_MAX_RETRIES + 1}): {e}")
+
+        return False
+
+    def _convert_with_retries(self, batch, env, user_installation_arg, top_level=True):
+        """Convert `batch` (a list of .docx paths) to PDF, retrying
+        transient failures and isolating a persistently bad file instead
+        of failing the whole job over it.
+
+        Policy: retry the batch at its current size up to BATCH_MAX_RETRIES
+        times (handles a flaky/slow LibreOffice invocation - the common
+        case). If it still won't convert and has more than one file, split
+        it in half and recurse on each half - this narrows down which
+        file(s) are actually the problem rather than discarding an entire
+        batch because of one bad document. A batch of exactly one file that
+        still fails after retries is recorded as a failed statement and
+        skipped; everything else in the job keeps going.
+
+        `top_level` marks calls made directly from the main batching loop,
+        as opposed to bisected sub-batches - only those count toward the
+        circuit breaker below, since that's what tells us whether *whole
+        batches* keep failing outright (systemic) rather than isolated
+        single files within an otherwise-healthy batch (expected, and what
+        bisection exists to handle).
+        """
+        if self._try_convert_batch(batch, env, user_installation_arg):
+            if top_level:
+                self.consecutive_batch_failures = 0
+            return
+
+        if top_level:
+            self.consecutive_batch_failures += 1
+            if self.consecutive_batch_failures >= CIRCUIT_BREAKER_THRESHOLD:
+                raise RuntimeError(
+                    f"{self.consecutive_batch_failures} batches in a row failed to convert even "
+                    f"after retries - this looks like a systemic problem (LibreOffice, disk, or "
+                    f"the environment itself) rather than a bad file, so the job is stopping "
+                    f"instead of working through every remaining statement one at a time. "
+                    f"Last error: {self._last_batch_error}"
+                )
+
+        if len(batch) > 1:
+            mid = len(batch) // 2
+            self._convert_with_retries(batch[:mid], env, user_installation_arg, top_level=False)
+            self._convert_with_retries(batch[mid:], env, user_installation_arg, top_level=False)
+            return
+
+        # A single file that still won't convert - skip it and move on
+        # rather than losing everything else the job already produced.
+        failed_path = batch[0]
+        safe_id = self._safe_id_from_filename(os.path.basename(failed_path))
+        row_info = self.rows_by_safe_id.get(safe_id) if safe_id else None
+        name = row_info['name'] if row_info else os.path.basename(failed_path)
+        self.failed_statements.append(name)
+        logger.error(
+            f"[{self.temp_id}] giving up on '{name}' after {BATCH_MAX_RETRIES + 1} attempts: {self._last_batch_error}")
+        try:
+            os.remove(failed_path)
+        except OSError:
+            pass
+
     def _run_libreoffice(self, cmd, env):
         """Run one LibreOffice conversion batch, making sure that if it
         times out (or fails) we kill LibreOffice's *entire* process tree -
@@ -572,8 +670,11 @@ class StatementGenerator:
             pass
 
     def _safe_id_from_filename(self, filename):
-        if filename.startswith("output_") and filename.endswith(".pdf"):
-            return filename[len("output_"):-len(".pdf")]
+        """Recover the safe_id from an `output_<safe_id>.<ext>` filename,
+        regardless of extension - used for both the .docx files handled
+        during conversion and the .pdf files handled afterward."""
+        if filename.startswith("output_"):
+            return os.path.splitext(filename)[0][len("output_"):]
         return None
 
     def apply_password_protection(self):
@@ -634,13 +735,25 @@ class StatementGenerator:
             self.apply_password_protection()
         self.rename_pdfs()
 
-        warnings = None
+        warnings = []
         if password_protection and self.unprotected_names:
-            warnings = [
+            warnings.extend(
                 f"'{name}' was generated without password protection because no ID was provided for that row."
                 for name in self.unprotected_names
-            ]
-        set_progress(self.temp_id, "completed", "Done - your statements are ready.", 100, warnings=warnings)
+            )
+        if self.failed_statements:
+            warnings.extend(
+                f"'{name}' could not be converted to PDF after repeated attempts and was skipped."
+                for name in self.failed_statements
+            )
+        warnings = warnings or None
+
+        done_message = "Done - your statements are ready."
+        if self.failed_statements:
+            done_message = (
+                f"Done, with {len(self.failed_statements)} statement(s) skipped - see warnings."
+            )
+        set_progress(self.temp_id, "completed", done_message, 100, warnings=warnings)
         # Last chance to hand this job's memory back to the OS before the
         # worker thread picks up (or waits for) the next one.
         _release_memory_to_os()
